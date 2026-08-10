@@ -113,7 +113,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         month: monthStr,
       }));
       await onConfirmImport(monthStr, file.name, recordsToImport);
+<<<<<<< HEAD
       handleClose();
+=======
+      // Reset state & close
+      setFile(null);
+      setParsedRecords([]);
+      setIsUploading(false);
+      onClose();
+>>>>>>> b462c8b08319681257b6e5dd4251ff3bf6f4b669
     } catch (err: any) {
       setErrorMsg(err.message || '导入数据提交失败');
       setIsUploading(false);
