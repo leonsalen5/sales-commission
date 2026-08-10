@@ -179,12 +179,15 @@ export function processLocalImport(
 }
 
 // Local Delete Batch
-export function processLocalDeleteBatch(batchId: string): SystemData {
-  const currentData = getLocalSystemData();
+export function processLocalDeleteBatch(
+  batchId: string,
+  currentData?: SystemData
+): SystemData {
+  const baseData = currentData || getLocalSystemData();
   const updatedData: SystemData = {
-    batches: currentData.batches.filter((b) => b.id !== batchId),
-    records: currentData.records.filter((r) => r.batchId !== batchId),
-    configs: { ...currentData.configs },
+    batches: baseData.batches.filter((b) => b.id !== batchId),
+    records: baseData.records.filter((r) => r.batchId !== batchId),
+    configs: { ...baseData.configs },
   };
   saveLocalSystemData(updatedData);
   return updatedData;

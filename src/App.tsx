@@ -189,12 +189,12 @@ export default function App() {
         saveLocalSystemData(json.data);
         return;
       }
-      throw new Error('API delete failed');
     } catch (err) {
       console.warn('API delete failed, processing locally:', err);
-      const updatedData = processLocalDeleteBatch(batchId);
-      setData(updatedData);
     }
+
+    const updatedData = processLocalDeleteBatch(batchId, data);
+    setData(updatedData);
   };
 
   // Action: Update Salesperson Role

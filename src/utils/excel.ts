@@ -20,17 +20,24 @@ export function parseExcelDate(val: any): { dateStr: string; monthStr: string } 
     return { dateStr: `${y}/${now.getMonth() + 1}/${now.getDate()}`, monthStr: `${y}-${m}` };
   }
 
-  // Handle JavaScript Date (XLSX with cellDates: true creates dates in UTC)
+  // Handle JavaScript Date
   if (val instanceof Date) {
-    // Extract UTC components to avoid timezone offset shifts (e.g. UTC-7 turning July 1 into June 30)
-    const y = val.getUTCFullYear();
-    const mInt = val.getUTCMonth() + 1;
+    let y = val.getFullYear();
+    let mInt = val.getMonth() + 1;
+    let d = val.getDate();
+
+    // If UTC time is exact midnight, use UTC components
+    if (val.getUTCHours() === 0 && val.getUTCMinutes() === 0 && val.getUTCSeconds() === 0) {
+      y = val.getUTCFullYear();
+      mInt = val.getUTCMonth() + 1;
+      d = val.getUTCDate();
+    }
+
     const m = String(mInt).padStart(2, '0');
-    const d = val.getUTCDate();
     return { dateStr: `${y}/${mInt}/${d}`, monthStr: `${y}-${m}` };
   }
 
-  // Handle Excel serial date number (e.g., 45474)
+  // Handle Excel serial date number (e.g., 45474, 46204)
   if (typeof val === 'number') {
     const parsedDate = XLSX.SSF.parse_date_code(val);
     if (parsedDate) {
@@ -42,23 +49,36 @@ export function parseExcelDate(val: any): { dateStr: string; monthStr: string } 
     }
   }
 
-  // Handle string (e.g. "2026/7/1", "2026-07-01", "2026/07/01", "2026年7月1日")
+  // Handle string (e.g. "2026/7/1", "2026-07-01", "2026年7月1日")
   const cleanStr = String(val).trim();
-  const dateMatch = cleanStr.match(/(\d{4})[年/.-]\s*(\d{1,2})[月/.-]?\s*(\d{1,2})?/);
-  if (dateMatch) {
-    const y = parseInt(dateMatch[1], 10);
-    const mInt = parseInt(dateMatch[2], 10);
-    const d = dateMatch[3] ? parseInt(dateMatch[3], 10) : 1;
+
+  // Try matching full year format first (e.g. "2026年7月1日", "2026-07-01", "2026/7/1")
+  const fullYearMatch = cleanStr.match(/(\d{4})[年/.-]\s*(\d{1,2})[月/.-]?\s*(\d{1,2})?/);
+  if (fullYearMatch) {
+    const y = parseInt(fullYearMatch[1], 10);
+    const mInt = parseInt(fullYearMatch[2], 10);
+    const d = fullYearMatch[3] ? parseInt(fullYearMatch[3], 10) : 1;
     const m = String(mInt).padStart(2, '0');
     return { dateStr: `${y}/${mInt}/${d}`, monthStr: `${y}-${m}` };
   }
 
+  // Fallback for strings like "7/1" or "07-01"
   const str = cleanStr.replace(/\./g, '/').replace(/-/g, '/');
-  const parts = str.split('/');
+  const parts = str.split('/').map((p) => p.trim()).filter(Boolean);
   if (parts.length >= 2) {
-    const y = parseInt(parts[0], 10) || new Date().getFullYear();
-    const mInt = parseInt(parts[1], 10) || 1;
-    const d = parts[2] ? parseInt(parts[2], 10) || 1 : 1;
+    let y = new Date().getFullYear();
+    let mInt = 1;
+    let d = 1;
+
+    if (parts[0].length === 4) {
+      y = parseInt(parts[0], 10);
+      mInt = parseInt(parts[1], 10) || 1;
+      d = parts[2] ? parseInt(parts[2], 10) || 1 : 1;
+    } else {
+      mInt = parseInt(parts[0], 10) || 1;
+      d = parseInt(parts[1], 10) || 1;
+    }
+
     const m = String(mInt).padStart(2, '0');
     return { dateStr: `${y}/${mInt}/${d}`, monthStr: `${y}-${m}` };
   }
@@ -66,7 +86,7 @@ export function parseExcelDate(val: any): { dateStr: string; monthStr: string } 
   const now = new Date();
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
-  return { dateStr: str, monthStr: `${y}-${m}` };
+  return { dateStr: cleanStr || `${y}/${now.getMonth() + 1}/${now.getDate()}`, monthStr: `${y}-${m}` };
 }
 
 /**
@@ -77,7 +97,8 @@ export function parseExcelFile(
   batchId: string,
   overrideMonth?: string
 ): SalesRecord[] {
-  const workbook = XLSX.read(fileBuffer, { type: 'array', cellDates: true });
+  // Disable cellDates so Excel serial numbers are parsed without timezone shifts
+  const workbook = XLSX.read(fileBuffer, { type: 'array', cellDates: false });
   const firstSheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[firstSheetName];
 
