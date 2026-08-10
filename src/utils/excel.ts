@@ -20,12 +20,14 @@ export function parseExcelDate(val: any): { dateStr: string; monthStr: string } 
     return { dateStr: `${y}/${now.getMonth() + 1}/${now.getDate()}`, monthStr: `${y}-${m}` };
   }
 
-  // Handle JavaScript Date
+  // Handle JavaScript Date (XLSX with cellDates: true creates dates in UTC)
   if (val instanceof Date) {
-    const y = val.getFullYear();
-    const m = String(val.getMonth() + 1).padStart(2, '0');
-    const d = val.getDate();
-    return { dateStr: `${y}/${val.getMonth() + 1}/${d}`, monthStr: `${y}-${m}` };
+    // Extract UTC components to avoid timezone offset shifts (e.g. UTC-7 turning July 1 into June 30)
+    const y = val.getUTCFullYear();
+    const mInt = val.getUTCMonth() + 1;
+    const m = String(mInt).padStart(2, '0');
+    const d = val.getUTCDate();
+    return { dateStr: `${y}/${mInt}/${d}`, monthStr: `${y}-${m}` };
   }
 
   // Handle Excel serial date number (e.g., 45474)
@@ -33,21 +35,32 @@ export function parseExcelDate(val: any): { dateStr: string; monthStr: string } 
     const parsedDate = XLSX.SSF.parse_date_code(val);
     if (parsedDate) {
       const y = parsedDate.y;
-      const m = String(parsedDate.m).padStart(2, '0');
+      const mInt = parsedDate.m;
+      const m = String(mInt).padStart(2, '0');
       const d = parsedDate.d;
-      return { dateStr: `${y}/${parsedDate.m}/${d}`, monthStr: `${y}-${m}` };
+      return { dateStr: `${y}/${mInt}/${d}`, monthStr: `${y}-${m}` };
     }
   }
 
-  // Handle string (e.g. "2026/7/1", "2026-07-01", "2026/07/01")
-  const str = String(val).trim().replace(/\./g, '/').replace(/-/g, '/');
+  // Handle string (e.g. "2026/7/1", "2026-07-01", "2026/07/01", "2026年7月1日")
+  const cleanStr = String(val).trim();
+  const dateMatch = cleanStr.match(/(\d{4})[年/.-]\s*(\d{1,2})[月/.-]?\s*(\d{1,2})?/);
+  if (dateMatch) {
+    const y = parseInt(dateMatch[1], 10);
+    const mInt = parseInt(dateMatch[2], 10);
+    const d = dateMatch[3] ? parseInt(dateMatch[3], 10) : 1;
+    const m = String(mInt).padStart(2, '0');
+    return { dateStr: `${y}/${mInt}/${d}`, monthStr: `${y}-${m}` };
+  }
+
+  const str = cleanStr.replace(/\./g, '/').replace(/-/g, '/');
   const parts = str.split('/');
   if (parts.length >= 2) {
     const y = parseInt(parts[0], 10) || new Date().getFullYear();
-    const m = parseInt(parts[1], 10) || 1;
+    const mInt = parseInt(parts[1], 10) || 1;
     const d = parts[2] ? parseInt(parts[2], 10) || 1 : 1;
-    const mStr = String(m).padStart(2, '0');
-    return { dateStr: `${y}/${m}/${d}`, monthStr: `${y}-${mStr}` };
+    const m = String(mInt).padStart(2, '0');
+    return { dateStr: `${y}/${mInt}/${d}`, monthStr: `${y}-${m}` };
   }
 
   const now = new Date();

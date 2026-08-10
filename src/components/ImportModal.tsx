@@ -89,7 +89,11 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
     setIsUploading(true);
     try {
-      await onConfirmImport(monthStr, file.name, parsedRecords);
+      const recordsToImport = parsedRecords.map((r) => ({
+        ...r,
+        month: monthStr,
+      }));
+      await onConfirmImport(monthStr, file.name, recordsToImport);
       // Reset state & close
       setFile(null);
       setParsedRecords([]);
