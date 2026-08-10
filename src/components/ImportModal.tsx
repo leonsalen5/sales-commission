@@ -25,6 +25,18 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const handleClose = () => {
+    setFile(null);
+    setTargetMonth('');
+    setParsedRecords([]);
+    setErrorMsg(null);
+    setIsUploading(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    onClose();
+  };
+
   if (!isOpen) return null;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -40,24 +52,31 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     try {
       const buffer = await selectedFile.arrayBuffer();
       const batchId = `temp_import_${Date.now()}`;
-      const records = parseExcelFile(buffer, batchId, targetMonth);
+      // Parse without override to detect month directly from file
+      const rawRecords = parseExcelFile(buffer, batchId, undefined);
 
-      if (records.length === 0) {
+      if (rawRecords.length === 0) {
         setErrorMsg('文件解析为空，或未匹配到标准的销售记录表头（日期、收入、项目、类型、金额、销售人、老师、备注）');
         setParsedRecords([]);
+        setTargetMonth('');
         return;
       }
 
-      setParsedRecords(records);
+      // Auto detect month from first record or current date
+      const detectedMonth = rawRecords[0]?.month || new Date().toISOString().substring(0, 7);
+      setTargetMonth(detectedMonth);
 
-      // Auto set target month from first record if empty
-      if (!targetMonth && records[0]?.month) {
-        setTargetMonth(records[0].month);
-      }
+      // Ensure all records share this detected month
+      const recordsWithMonth = rawRecords.map((r) => ({
+        ...r,
+        month: detectedMonth,
+      }));
+      setParsedRecords(recordsWithMonth);
     } catch (err: any) {
       console.error(err);
       setErrorMsg('Excel文件解析失败，请确保格式正确');
       setParsedRecords([]);
+      setTargetMonth('');
     }
   };
 
@@ -94,11 +113,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         month: monthStr,
       }));
       await onConfirmImport(monthStr, file.name, recordsToImport);
-      // Reset state & close
-      setFile(null);
-      setParsedRecords([]);
-      setIsUploading(false);
-      onClose();
+      handleClose();
     } catch (err: any) {
       setErrorMsg(err.message || '导入数据提交失败');
       setIsUploading(false);
@@ -126,8 +141,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             </div>
           </div>
           <button
-            onClick={onClose}
-            className="p-1.5 text-[#A8A890] hover:text-[#5A5A40] hover:bg-[#F5F2EB] rounded-lg transition-colors"
+            onClick={handleClose}
+            className="p-1.5 text-[#A8A890] hover:text-[#5A5A40] hover:bg-[#F5F2EB] rounded-lg transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -139,7 +154,12 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           <div
             onDragOver={handleDragOver}
             onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => {
+              if (fileInputRef.current) {
+                fileInputRef.current.value = '';
+              }
+              fileInputRef.current?.click();
+            }}
             className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
               file
                 ? 'border-[#8C8C70] bg-[#F5F2EB]'
@@ -246,8 +266,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         {/* Modal Footer */}
         <div className="pt-4 border-t border-[#E8E6DF] flex items-center justify-end gap-3">
           <button
-            onClick={onClose}
-            className="px-4 py-2 text-xs font-semibold text-[#8A8A70] hover:bg-[#F5F2EB] rounded-lg transition-colors"
+            onClick={handleClose}
+            className="px-4 py-2 text-xs font-semibold text-[#8A8A70] hover:bg-[#F5F2EB] rounded-lg transition-colors cursor-pointer"
           >
             取消
           </button>

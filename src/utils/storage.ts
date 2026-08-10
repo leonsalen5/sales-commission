@@ -193,12 +193,56 @@ export function processLocalDeleteBatch(
   return updatedData;
 }
 
+// Local Update Record
+export function processLocalUpdateRecord(
+  updatedRecord: SalesRecord,
+  currentData?: SystemData
+): SystemData {
+  const baseData = currentData || getLocalSystemData();
+  const updatedRecords = baseData.records.map((r) =>
+    r.id === updatedRecord.id ? updatedRecord : r
+  );
+  const updatedData: SystemData = {
+    ...baseData,
+    records: updatedRecords,
+  };
+
+  // Ensure salesperson config exists
+  const sp = updatedRecord.salesperson?.trim();
+  if (sp && !updatedData.configs[sp]) {
+    updatedData.configs[sp] = {
+      salesperson: sp,
+      role: '普通课程顾问',
+      otherAmountByMonth: {},
+    };
+  }
+
+  saveLocalSystemData(updatedData);
+  return updatedData;
+}
+
+// Local Delete Record
+export function processLocalDeleteRecord(
+  recordId: string,
+  currentData?: SystemData
+): SystemData {
+  const baseData = currentData || getLocalSystemData();
+  const updatedRecords = baseData.records.filter((r) => r.id !== recordId);
+  const updatedData: SystemData = {
+    ...baseData,
+    records: updatedRecords,
+  };
+  saveLocalSystemData(updatedData);
+  return updatedData;
+}
+
 // Local Update Config
 export function processLocalUpdateConfig(
   salesperson: string,
   role?: SalespersonRole,
   month?: string,
-  otherAmount?: number
+  otherAmount?: number,
+  customNewRate?: number | null
 ): SystemData {
   const currentData = getLocalSystemData();
   const configs = { ...currentData.configs };
@@ -209,17 +253,28 @@ export function processLocalUpdateConfig(
       role: role || '普通课程顾问',
       otherAmountByMonth: {},
     };
+  } else {
+    configs[salesperson] = { ...configs[salesperson] };
   }
 
   if (role) {
     configs[salesperson].role = role;
   }
 
+  if (customNewRate === null) {
+    delete configs[salesperson].customNewRate;
+  } else if (typeof customNewRate === 'number' && !isNaN(customNewRate)) {
+    configs[salesperson].customNewRate = customNewRate;
+  }
+
   if (month && typeof otherAmount === 'number') {
     if (!configs[salesperson].otherAmountByMonth) {
       configs[salesperson].otherAmountByMonth = {};
     }
-    configs[salesperson].otherAmountByMonth![month] = otherAmount;
+    configs[salesperson].otherAmountByMonth = {
+      ...configs[salesperson].otherAmountByMonth,
+      [month]: otherAmount,
+    };
   }
 
   const updatedData: SystemData = {
@@ -230,9 +285,29 @@ export function processLocalUpdateConfig(
   return updatedData;
 }
 
+// Local Set / Update Password
+export function processLocalSetPassword(
+  passwordHash: string,
+  currentData?: SystemData
+): SystemData {
+  const baseData = currentData || getLocalSystemData();
+  const updatedData: SystemData = {
+    ...baseData,
+    passwordHash,
+  };
+  saveLocalSystemData(updatedData);
+  return updatedData;
+}
+
 // Local Reset Data
 export function processLocalResetData(): SystemData {
-  const emptyData: SystemData = { batches: [], records: [], configs: {} };
+  const current = getLocalSystemData();
+  const emptyData: SystemData = {
+    batches: [],
+    records: [],
+    configs: {},
+    passwordHash: current.passwordHash,
+  };
   saveLocalSystemData(emptyData);
   return emptyData;
 }

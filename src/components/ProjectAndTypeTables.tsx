@@ -13,6 +13,9 @@ export const ProjectAndTypeTables: React.FC<ProjectAndTypeTablesProps> = ({
 }) => {
   const totalProjectSales = projectSummaries.reduce((s, p) => s + p.salesCount, 0);
   const totalProjectAmount = projectSummaries.reduce((s, p) => s + p.totalAmount, 0);
+  const totalNewCount = projectSummaries.reduce((s, p) => s + p.newCount, 0);
+  const totalRenewalCount = projectSummaries.reduce((s, p) => s + p.renewalCount, 0);
+  const totalIntensiveCount = projectSummaries.reduce((s, p) => s + p.intensiveCount, 0);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -162,8 +165,14 @@ export const ProjectAndTypeTables: React.FC<ProjectAndTypeTablesProps> = ({
                     <td className="py-2.5 px-3 text-right">
                       ¥{totalProjectAmount.toLocaleString()}
                     </td>
-                    <td colSpan={3} className="py-2.5 px-3 text-center text-[#A8A890] font-normal">
-                      -
+                    <td className="py-2.5 px-3 text-center font-bold text-[#5A5A40]">
+                      {totalNewCount}
+                    </td>
+                    <td className="py-2.5 px-3 text-center font-bold text-[#5A5A40]">
+                      {totalRenewalCount}
+                    </td>
+                    <td className="py-2.5 px-3 text-center font-bold text-[#5A5A40]">
+                      {totalIntensiveCount}
                     </td>
                   </tr>
                 </tfoot>

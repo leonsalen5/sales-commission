@@ -20,11 +20,16 @@ import {
   processLocalDeleteBatch,
   processLocalUpdateConfig,
   processLocalResetData,
+  processLocalUpdateRecord,
+  processLocalDeleteRecord,
+  processLocalSetPassword,
 } from './utils/storage';
+import { getTodayDateString } from './utils/crypto';
 
 // UI Components
 import { Header } from './components/Header';
 import { MonthFilter } from './components/MonthFilter';
+import { PeriodAndYearlyStats } from './components/PeriodAndYearlyStats';
 import { SalespersonTable } from './components/SalespersonTable';
 import { TeacherTable } from './components/TeacherTable';
 import { ProjectAndTypeTables } from './components/ProjectAndTypeTables';
@@ -32,6 +37,13 @@ import { DetailRecordsTable } from './components/DetailRecordsTable';
 import { ImportModal } from './components/ImportModal';
 import { BatchHistoryModal } from './components/BatchHistoryModal';
 import { RuleModal } from './components/RuleModal';
+import { SingleRecordModal } from './components/SingleRecordModal';
+import {
+  SetInitialPasswordModal,
+  VerifyPasswordModal,
+  ChangePasswordModal,
+} from './components/AuthModals';
+import { AlertTriangle } from 'lucide-react';
 
 export default function App() {
   const [data, setData] = useState<SystemData>({
@@ -44,8 +56,42 @@ export default function App() {
 
   // Modals state
   const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
+  const [isSingleRecordModalOpen, setIsSingleRecordModalOpen] = useState<boolean>(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState<boolean>(false);
   const [isRuleModalOpen, setIsRuleModalOpen] = useState<boolean>(false);
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState<boolean>(false);
+  const [recordToEdit, setRecordToEdit] = useState<SalesRecord | null>(null);
+
+  // Auth Modals & Verification State
+  const [isSetPasswordModalOpen, setIsSetPasswordModalOpen] = useState<boolean>(false);
+  const [isVerifyPasswordModalOpen, setIsVerifyPasswordModalOpen] = useState<boolean>(false);
+  const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState<boolean>(false);
+  const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
+  const [verifiedDate, setVerifiedDate] = useState<string>(
+    () => localStorage.getItem('auth_verified_date') || ''
+  );
+
+  const isVerifiedToday = verifiedDate === getTodayDateString();
+
+  // Guard protected sensitive actions
+  const runWithAuth = (action: () => void) => {
+    const today = getTodayDateString();
+    const storedVerified = localStorage.getItem('auth_verified_date');
+
+    if (storedVerified === today) {
+      action();
+      return;
+    }
+
+    if (!data.passwordHash) {
+      setPendingAction(() => action);
+      setIsSetPasswordModalOpen(true);
+      return;
+    }
+
+    setPendingAction(() => action);
+    setIsVerifyPasswordModalOpen(true);
+  };
 
   // Fetch initial data from server or fallback to LocalStorage
   const loadData = async () => {
@@ -197,16 +243,59 @@ export default function App() {
     setData(updatedData);
   };
 
-  // Action: Update Salesperson Role
+  // Action: Update Single Record
+  const handleUpdateRecord = async (updatedRecord: SalesRecord) => {
+    try {
+      const res = await fetch(`/api/records/${updatedRecord.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedRecord),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setData(json.data);
+        saveLocalSystemData(json.data);
+        return;
+      }
+    } catch (err) {
+      console.warn('API update record failed, processing locally:', err);
+    }
+
+    const updatedData = processLocalUpdateRecord(updatedRecord, data);
+    setData(updatedData);
+  };
+
+  // Action: Delete Single Record
+  const handleDeleteRecord = async (recordId: string) => {
+    try {
+      const res = await fetch(`/api/records/${recordId}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setData(json.data);
+        saveLocalSystemData(json.data);
+        return;
+      }
+    } catch (err) {
+      console.warn('API delete record failed, processing locally:', err);
+    }
+
+    const updatedData = processLocalDeleteRecord(recordId, data);
+    setData(updatedData);
+  };
+
+  // Action: Update Salesperson Role & Custom New Rate
   const handleUpdateRole = async (
     salesperson: string,
-    role: SalespersonRole
+    role: SalespersonRole,
+    customNewRate?: number | null
   ) => {
     try {
       const res = await fetch('/api/salesperson-config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ salesperson, role }),
+        body: JSON.stringify({ salesperson, role, customNewRate }),
       });
       if (res.ok) {
         const json = await res.json();
@@ -217,7 +306,13 @@ export default function App() {
       throw new Error('API update role failed');
     } catch (err) {
       console.warn('API update role failed, processing locally:', err);
-      const updatedData = processLocalUpdateConfig(salesperson, role);
+      const updatedData = processLocalUpdateConfig(
+        salesperson,
+        role,
+        undefined,
+        undefined,
+        customNewRate
+      );
       setData(updatedData);
     }
   };
@@ -257,6 +352,73 @@ export default function App() {
     }
   };
 
+  // Auth Handlers
+  const handleSetPassword = async (pwdHash: string) => {
+    try {
+      const res = await fetch('/api/auth/password', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passwordHash: pwdHash }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setData(json.data);
+        saveLocalSystemData(json.data);
+      } else {
+        throw new Error('API password set failed');
+      }
+    } catch (err) {
+      console.warn('Set password API failed, saving locally:', err);
+      const updated = processLocalSetPassword(pwdHash, data);
+      setData(updated);
+    }
+
+    const today = getTodayDateString();
+    localStorage.setItem('auth_verified_date', today);
+    setVerifiedDate(today);
+
+    if (pendingAction) {
+      pendingAction();
+      setPendingAction(null);
+    }
+  };
+
+  const handleVerifySuccess = () => {
+    const today = getTodayDateString();
+    localStorage.setItem('auth_verified_date', today);
+    setVerifiedDate(today);
+
+    if (pendingAction) {
+      pendingAction();
+      setPendingAction(null);
+    }
+  };
+
+  const handleChangePassword = async (newPwdHash: string) => {
+    try {
+      const res = await fetch('/api/auth/password', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passwordHash: newPwdHash }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setData(json.data);
+        saveLocalSystemData(json.data);
+      } else {
+        throw new Error('API change password failed');
+      }
+    } catch (err) {
+      console.warn('Change password API failed, saving locally:', err);
+      const updated = processLocalSetPassword(newPwdHash, data);
+      setData(updated);
+    }
+
+    const today = getTodayDateString();
+    localStorage.setItem('auth_verified_date', today);
+    setVerifiedDate(today);
+  };
+
   // Action: Download Sample Template
   const handleDownloadSample = () => {
     try {
@@ -290,37 +452,63 @@ export default function App() {
 
   // Action: Reset Data
   const handleResetData = async () => {
-    if (
-      window.confirm('警告：此操作将清空所有月份的销售数据与导入记录，确定要重置吗？')
-    ) {
-      try {
-        const res = await fetch('/api/reset', { method: 'POST' });
-        if (res.ok) {
-          const json = await res.json();
-          setData(json.data);
-          saveLocalSystemData(json.data);
-          setSelectedMonths([]);
-          return;
-        }
-        throw new Error('API reset failed');
-      } catch (err) {
-        console.warn('API reset failed, resetting locally:', err);
-        const emptyData = processLocalResetData();
-        setData(emptyData);
+    try {
+      const res = await fetch('/api/reset', { method: 'POST' });
+      if (res.ok) {
+        const json = await res.json();
+        setData(json.data);
+        saveLocalSystemData(json.data);
         setSelectedMonths([]);
+        setIsResetConfirmOpen(false);
+        return;
       }
+      throw new Error('API reset failed');
+    } catch (err) {
+      console.warn('API reset failed, resetting locally:', err);
+      const emptyData = processLocalResetData();
+      setData(emptyData);
+      setSelectedMonths([]);
+      setIsResetConfirmOpen(false);
     }
   };
+
+  // Unique lists for autocompletion
+  const existingSalespersons = useMemo(() => {
+    const set = new Set<string>();
+    data.records.forEach((r) => r.salesperson && set.add(r.salesperson.trim()));
+    Object.keys(data.configs).forEach((sp) => sp && set.add(sp.trim()));
+    return Array.from(set).sort();
+  }, [data.records, data.configs]);
+
+  const existingTeachers = useMemo(() => {
+    const set = new Set<string>();
+    data.records.forEach((r) => r.teacher && set.add(r.teacher.trim()));
+    return Array.from(set).sort();
+  }, [data.records]);
+
+  const existingProjects = useMemo(() => {
+    const set = new Set<string>();
+    data.records.forEach((r) => r.project && set.add(r.project.trim()));
+    return Array.from(set).sort();
+  }, [data.records]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased flex flex-col">
       {/* App Header */}
       <Header
-        onOpenImportModal={() => setIsImportModalOpen(true)}
+        onOpenImportModal={() => runWithAuth(() => setIsImportModalOpen(true))}
+        onOpenSingleRecordModal={() =>
+          runWithAuth(() => {
+            setRecordToEdit(null);
+            setIsSingleRecordModalOpen(true);
+          })
+        }
         onOpenBatchHistory={() => setIsHistoryModalOpen(true)}
-        onDownloadSample={handleDownloadSample}
-        onExportExcel={handleExportExcel}
-        onResetData={handleResetData}
+        onDownloadSample={() => runWithAuth(handleDownloadSample)}
+        onExportExcel={() => runWithAuth(handleExportExcel)}
+        onResetData={() => runWithAuth(() => setIsResetConfirmOpen(true))}
+        onOpenChangePasswordModal={() => setIsChangePasswordModalOpen(true)}
+        isVerifiedToday={isVerifiedToday}
         batchCount={data.batches.length}
         recordCount={filteredRecords.length}
       />
@@ -347,8 +535,10 @@ export default function App() {
             <SalespersonTable
               summaries={salespersonSummaries}
               configs={data.configs}
-              onUpdateRole={handleUpdateRole}
-              onUpdateOtherAmount={handleUpdateOtherAmount}
+              onUpdateRole={(sp, role) => runWithAuth(() => handleUpdateRole(sp, role))}
+              onUpdateOtherAmount={(sp, amt) =>
+                runWithAuth(() => handleUpdateOtherAmount(sp, amt))
+              }
               selectedMonth={selectedMonths[0] || ''}
             />
 
@@ -365,6 +555,22 @@ export default function App() {
             <DetailRecordsTable
               records={filteredRecords}
               salespersonConfigs={data.configs}
+              onEditRecord={(record) =>
+                runWithAuth(() => {
+                  setRecordToEdit(record);
+                  setIsSingleRecordModalOpen(true);
+                })
+              }
+              onDeleteRecord={(id) => runWithAuth(() => handleDeleteRecord(id))}
+            />
+
+            {/* 5. 多维业绩与提成统计概览 (按年份、近一年、近半年、近三个月) - 含柱状图与扇形图 */}
+            <PeriodAndYearlyStats
+              records={data.records}
+              configs={data.configs}
+              availableMonths={availableMonths}
+              selectedMonths={selectedMonths}
+              onSelectMonths={setSelectedMonths}
             />
           </>
         )}
@@ -382,17 +588,93 @@ export default function App() {
         onConfirmImport={handleConfirmImport}
       />
 
+      <SingleRecordModal
+        isOpen={isSingleRecordModalOpen}
+        onClose={() => {
+          setIsSingleRecordModalOpen(false);
+          setRecordToEdit(null);
+        }}
+        onAddRecord={handleConfirmImport}
+        onUpdateRecord={handleUpdateRecord}
+        recordToEdit={recordToEdit}
+        existingSalespersons={existingSalespersons}
+        existingTeachers={existingTeachers}
+        existingProjects={existingProjects}
+      />
+
       <BatchHistoryModal
         isOpen={isHistoryModalOpen}
         onClose={() => setIsHistoryModalOpen(false)}
         batches={data.batches}
-        onDeleteBatch={handleDeleteBatch}
+        onDeleteBatch={(batchId) => runWithAuth(() => handleDeleteBatch(batchId))}
       />
 
       <RuleModal
         isOpen={isRuleModalOpen}
         onClose={() => setIsRuleModalOpen(false)}
       />
+
+      {/* Auth Modals */}
+      <SetInitialPasswordModal
+        isOpen={isSetPasswordModalOpen}
+        onClose={() => {
+          setIsSetPasswordModalOpen(false);
+          setPendingAction(null);
+        }}
+        onSetPassword={handleSetPassword}
+      />
+
+      <VerifyPasswordModal
+        isOpen={isVerifyPasswordModalOpen}
+        onClose={() => {
+          setIsVerifyPasswordModalOpen(false);
+          setPendingAction(null);
+        }}
+        currentPasswordHash={data.passwordHash || ''}
+        onSuccess={handleVerifySuccess}
+      />
+
+      <ChangePasswordModal
+        isOpen={isChangePasswordModalOpen}
+        onClose={() => setIsChangePasswordModalOpen(false)}
+        onChangePassword={handleChangePassword}
+      />
+
+      {/* System Reset Modal */}
+      {isResetConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border border-[#E8E6DF] shadow-xl max-w-md w-full p-6 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 text-red-600 mb-3">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#4A4A40]">重置系统数据警告</h3>
+                <p className="text-xs text-[#8A8A70]">此操作将清空所有销售记录与历史导入数据</p>
+              </div>
+            </div>
+
+            <div className="my-4 p-3 bg-red-50/70 border border-red-200 rounded-xl text-xs text-red-800 leading-relaxed">
+              您确定要清空系统数据吗？清空后所有已录入和导入的销售数据、批次记录以及规则配置将全部重置，建议在重置前先导出Excel备份！
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#E8E6DF]">
+              <button
+                onClick={() => setIsResetConfirmOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded-lg transition-colors border border-[#E8E6DF] cursor-pointer"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleResetData}
+                className="px-4 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors shadow-2xs cursor-pointer"
+              >
+                确认重置
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

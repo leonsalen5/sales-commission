@@ -12,6 +12,8 @@ export interface SalesRecord {
   salesperson: string; // 销售人
   teacher: string; // 老师
   notes: string; // 备注
+  customSalesCommissionRate?: number; // 自定义销售提成比例 (如 0.07 代表 7%)
+  customTeacherCommissionRate?: number; // 自定义教师提成比例 (如 0.01 代表 1%)
 }
 
 export interface ImportBatch {
@@ -28,6 +30,7 @@ export type SalespersonRole = '普通课程顾问' | '非自主招生课程顾�
 export interface SalespersonConfig {
   salesperson: string;
   role: SalespersonRole;
+  customNewRate?: number; // 自定义新报默认提成比例 (如 0.05 代表 5%)
   // Month string (YYYY-MM) -> other amount
   otherAmountByMonth?: Record<string, number>;
 }
@@ -90,4 +93,5 @@ export interface SystemData {
   batches: ImportBatch[];
   records: SalesRecord[];
   configs: Record<string, SalespersonConfig>;
+  passwordHash?: string;
 }

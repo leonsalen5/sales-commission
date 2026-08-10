@@ -327,10 +327,65 @@ app.delete('/api/batches/:batchId', (req, res) => {
   }
 });
 
-// Update Salesperson Config (Role and Other Amount)
+// Update Single Record
+app.put('/api/records/:recordId', (req, res) => {
+  try {
+    const { recordId } = req.params;
+    const updatedFields = req.body;
+    const data = getSystemData();
+
+    const idx = data.records.findIndex((r) => r.id === recordId);
+    if (idx !== -1) {
+      data.records[idx] = {
+        ...data.records[idx],
+        ...updatedFields,
+        amount: typeof updatedFields.amount === 'number' ? updatedFields.amount : parseFloat(updatedFields.amount) || data.records[idx].amount,
+      };
+
+      // Ensure salesperson config exists if salesperson changed
+      const sp = data.records[idx].salesperson?.trim();
+      if (sp && !data.configs[sp]) {
+        data.configs[sp] = {
+          salesperson: sp,
+          role: '普通课程顾问',
+          otherAmountByMonth: {},
+        };
+      }
+
+      saveSystemData(data);
+      return res.json({ success: true, record: data.records[idx], data });
+    } else {
+      return res.status(404).json({ error: '未找到指定销售记录' });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || '更新销售记录失败' });
+  }
+});
+
+// Delete Single Record
+app.delete('/api/records/:recordId', (req, res) => {
+  try {
+    const { recordId } = req.params;
+    const data = getSystemData();
+
+    const initialLength = data.records.length;
+    data.records = data.records.filter((r) => r.id !== recordId);
+
+    if (data.records.length < initialLength) {
+      saveSystemData(data);
+      return res.json({ success: true, recordId, data });
+    } else {
+      return res.status(404).json({ error: '未找到指定销售记录' });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || '删除销售记录失败' });
+  }
+});
+
+// Update Salesperson Config (Role, Custom New Rate, and Other Amount)
 app.put('/api/salesperson-config', (req, res) => {
   try {
-    const { salesperson, role, month, otherAmount } = req.body;
+    const { salesperson, role, month, otherAmount, customNewRate } = req.body;
     if (!salesperson) {
       return res.status(400).json({ error: '销售人姓名不能为空' });
     }
@@ -348,6 +403,12 @@ app.put('/api/salesperson-config', (req, res) => {
       data.configs[salesperson].role = role;
     }
 
+    if (customNewRate === null) {
+      delete data.configs[salesperson].customNewRate;
+    } else if (typeof customNewRate === 'number' && !isNaN(customNewRate)) {
+      data.configs[salesperson].customNewRate = customNewRate;
+    }
+
     if (month && typeof otherAmount === 'number') {
       if (!data.configs[salesperson].otherAmountByMonth) {
         data.configs[salesperson].otherAmountByMonth = {};
@@ -362,10 +423,32 @@ app.put('/api/salesperson-config', (req, res) => {
   }
 });
 
+// Update / Set System Password
+app.put('/api/auth/password', (req, res) => {
+  try {
+    const { passwordHash } = req.body;
+    if (!passwordHash) {
+      return res.status(400).json({ error: '密码哈希不能为空' });
+    }
+    const data = getSystemData();
+    data.passwordHash = passwordHash;
+    saveSystemData(data);
+    res.json({ success: true, passwordHash, data });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || '设置密码失败' });
+  }
+});
+
 // Reset / Clear All Data
 app.post('/api/reset', (req, res) => {
   try {
-    const emptyData: SystemData = { batches: [], records: [], configs: {} };
+    const current = getSystemData();
+    const emptyData: SystemData = {
+      batches: [],
+      records: [],
+      configs: {},
+      passwordHash: current.passwordHash,
+    };
     saveSystemData(emptyData);
     res.json({ success: true, data: emptyData });
   } catch (err: any) {

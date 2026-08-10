@@ -32,6 +32,37 @@ export function calculateRenewalBonus(amount: number): number {
 }
 
 /**
+ * Utility to check if salesperson field is missing/empty/blank
+ */
+export function isMissingSalesperson(salesperson?: string): boolean {
+  if (!salesperson) return true;
+  const s = salesperson.trim();
+  if (!s) return true;
+  const lower = s.toLowerCase();
+  if (
+    [
+      '未填销售',
+      '未名销售',
+      '未名',
+      '未填写',
+      '无',
+      '空缺',
+      '未分配',
+      '未分派',
+      '-',
+      '--',
+      '暂无',
+      '未知',
+      'none',
+      'null',
+    ].includes(s)
+  ) {
+    return true;
+  }
+  return lower.includes('未名') || lower.includes('未填');
+}
+
+/**
  * Enhances raw record with sales & teacher commission rates and amounts
  */
 export function calculateRecordDetails(
@@ -39,17 +70,34 @@ export function calculateRecordDetails(
   salespersonConfigs: Record<string, SalespersonConfig>
 ): CalculatedRecord {
   const salesperson = record.salesperson?.trim() || '未填销售';
-  const role: SalespersonRole =
-    salespersonConfigs[salesperson]?.role || '普通课程顾问';
+  const spConfig = salespersonConfigs[salesperson];
+  const role: SalespersonRole = spConfig?.role || '普通课程顾问';
 
   // 1. Sales Commission Rate
   let salesCommissionRate = 0.05; // Default 5%
   const cleanType = record.type?.trim() || '';
 
   if (cleanType === '新') {
-    salesCommissionRate = role === '非自主招生课程顾问' ? 0.05 : 0.07;
+    if (
+      spConfig?.customNewRate !== undefined &&
+      spConfig?.customNewRate !== null &&
+      !isNaN(spConfig.customNewRate)
+    ) {
+      salesCommissionRate = spConfig.customNewRate;
+    } else {
+      salesCommissionRate = role === '非自主招生课程顾问' ? 0.05 : 0.07;
+    }
   } else if (cleanType === '续' || cleanType === '集训') {
     salesCommissionRate = 0.05;
+  }
+
+  // Override if custom sales commission rate is set
+  if (
+    record.customSalesCommissionRate !== undefined &&
+    record.customSalesCommissionRate !== null &&
+    !isNaN(record.customSalesCommissionRate)
+  ) {
+    salesCommissionRate = record.customSalesCommissionRate;
   }
 
   const salesCommissionAmount = record.amount * salesCommissionRate;
@@ -67,6 +115,15 @@ export function calculateRecordDetails(
   } else {
     // 老师为空，不计提成
     teacherCommissionRate = 0;
+  }
+
+  // Override if custom teacher commission rate is set
+  if (
+    record.customTeacherCommissionRate !== undefined &&
+    record.customTeacherCommissionRate !== null &&
+    !isNaN(record.customTeacherCommissionRate)
+  ) {
+    teacherCommissionRate = record.customTeacherCommissionRate;
   }
 
   const teacherCommissionAmount = record.amount * teacherCommissionRate;
@@ -170,14 +227,15 @@ export function generateSalespersonSummaries(
       Math.round(data.newSignupCommission * 100) / 100;
     const intensiveCommission =
       Math.round(data.intensiveCommission * 100) / 100;
-    const totalCommission =
-      Math.round(
-        (renewalCommission + newSignupCommission + intensiveCommission) * 100
-      ) / 100;
-
     const newSignupBonus = calculateNewSignupBonus(data.newSignupAmount);
     const renewalBonus = calculateRenewalBonus(data.renewalAmount);
     const bonus = newSignupBonus + renewalBonus;
+
+    const totalCommission =
+      Math.round(
+        (renewalCommission + newSignupCommission + intensiveCommission + bonus) *
+          100
+      ) / 100;
 
     result.push({
       salesperson: sp,
@@ -389,3 +447,160 @@ export function generateTypeSummaries(
     };
   });
 }
+
+/**
+ * Interface for Period or Year Summary
+ */
+export interface PeriodSummaryItem {
+  key: string;
+  title: string;
+  subTitle: string;
+  months: string[];
+  totalPerformance: number;
+  salesCommission: number;
+  bonus: number;
+  salesTotal: number; // salesCommission + bonus
+  teacherCommission: number;
+  grandTotalCommission: number; // salesTotal + teacherCommission
+  recordCount: number;
+  newSignupCount: number;
+  monthlyAverage: number;
+}
+
+/**
+ * Helper to compute statistical summary for a set of months
+ */
+export function computeSummaryForMonths(
+  key: string,
+  title: string,
+  subTitle: string,
+  months: string[],
+  records: SalesRecord[],
+  configs: Record<string, SalespersonConfig>
+): PeriodSummaryItem {
+  if (!months || months.length === 0) {
+    return {
+      key,
+      title,
+      subTitle: '无数据',
+      months: [],
+      totalPerformance: 0,
+      salesCommission: 0,
+      bonus: 0,
+      salesTotal: 0,
+      teacherCommission: 0,
+      grandTotalCommission: 0,
+      recordCount: 0,
+      newSignupCount: 0,
+      monthlyAverage: 0,
+    };
+  }
+
+  const filtered = records.filter((r) => months.includes(r.month));
+  const recordCount = filtered.length;
+  const totalPerformance = filtered.reduce((sum, r) => sum + r.amount, 0);
+  const newSignupCount = filtered.filter((r) => r.type?.trim() === '新').length;
+
+  let teacherCommission = 0;
+  filtered.forEach((r) => {
+    const calc = calculateRecordDetails(r, configs);
+    teacherCommission += calc.teacherCommissionAmount;
+  });
+
+  let salesCommission = 0;
+  let bonus = 0;
+
+  for (const m of months) {
+    const spSummaries = generateSalespersonSummaries(records, configs, [m]);
+    spSummaries.forEach((s) => {
+      salesCommission += s.totalCommission;
+      bonus += s.bonus;
+    });
+  }
+
+  salesCommission = Math.round(salesCommission * 100) / 100;
+  teacherCommission = Math.round(teacherCommission * 100) / 100;
+  bonus = Math.round(bonus * 100) / 100;
+  const salesTotal = Math.round((salesCommission + bonus) * 100) / 100;
+  const grandTotalCommission = Math.round((salesTotal + teacherCommission) * 100) / 100;
+  const monthlyAverage =
+    months.length > 0 ? Math.round((totalPerformance / months.length) * 100) / 100 : 0;
+
+  return {
+    key,
+    title,
+    subTitle,
+    months,
+    totalPerformance,
+    salesCommission,
+    bonus,
+    salesTotal,
+    teacherCommission,
+    grandTotalCommission,
+    recordCount,
+    newSignupCount,
+    monthlyAverage,
+  };
+}
+
+/**
+ * Generate yearly statistics summaries
+ */
+export function generateYearlySummaries(
+  records: SalesRecord[],
+  configs: Record<string, SalespersonConfig>,
+  availableMonths: string[]
+): PeriodSummaryItem[] {
+  const yearMap = new Map<string, string[]>();
+  for (const m of availableMonths) {
+    const year = m.split('-')[0];
+    if (year) {
+      if (!yearMap.has(year)) yearMap.set(year, []);
+      yearMap.get(year)!.push(m);
+    }
+  }
+
+  const years = Array.from(yearMap.keys()).sort().reverse();
+
+  return years.map((year) => {
+    const months = yearMap.get(year) || [];
+    const minMonth = months[months.length - 1];
+    const maxMonth = months[0];
+    const sub = months.length === 1 ? minMonth : `${minMonth} 至 ${maxMonth} (${months.length}个月)`;
+    return computeSummaryForMonths(
+      year,
+      `${year}年度`,
+      sub,
+      months,
+      records,
+      configs
+    );
+  });
+}
+
+/**
+ * Generate periodical statistics (Past 3 months, Past 6 months, Past 1 year)
+ */
+export function generatePeriodSummaries(
+  records: SalesRecord[],
+  configs: Record<string, SalespersonConfig>,
+  availableMonths: string[]
+): PeriodSummaryItem[] {
+  const p3 = availableMonths.slice(0, 3);
+  const p6 = availableMonths.slice(0, 6);
+  const p12 = availableMonths.slice(0, 12);
+
+  const formatSub = (monthsList: string[]) => {
+    if (monthsList.length === 0) return '无数据';
+    const minM = monthsList[monthsList.length - 1];
+    const maxM = monthsList[0];
+    return minM === maxM ? minM : `${minM} 至 ${maxM}`;
+  };
+
+  return [
+    computeSummaryForMonths('3months', '近 3 个月', formatSub(p3), p3, records, configs),
+    computeSummaryForMonths('6months', '近半年 (6个月)', formatSub(p6), p6, records, configs),
+    computeSummaryForMonths('12months', '近一年 (12个月)', formatSub(p12), p12, records, configs),
+  ];
+}
+

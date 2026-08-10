@@ -4,12 +4,13 @@ import {
   SalespersonRole,
   SalespersonConfig,
 } from '../types';
-import { User, Award, Edit3, Check, HelpCircle } from 'lucide-react';
+import { isMissingSalesperson } from '../utils/calculations';
+import { User, Award, Edit3, Check, HelpCircle, AlertTriangle, Percent, Settings, X, RotateCcw } from 'lucide-react';
 
 interface SalespersonTableProps {
   summaries: SalespersonSummary[];
   configs: Record<string, SalespersonConfig>;
-  onUpdateRole: (salesperson: string, role: SalespersonRole) => void;
+  onUpdateRole: (salesperson: string, role: SalespersonRole, customNewRate?: number | null) => void;
   onUpdateOtherAmount: (salesperson: string, amount: number) => void;
   selectedMonth: string;
 }
@@ -24,6 +25,10 @@ export const SalespersonTable: React.FC<SalespersonTableProps> = ({
   const [editingSp, setEditingSp] = useState<string | null>(null);
   const [editingVal, setEditingVal] = useState<string>('');
 
+  // Custom default rate modal state
+  const [rateModalSp, setRateModalSp] = useState<string | null>(null);
+  const [rateModalVal, setRateModalVal] = useState<string>('');
+
   const handleStartEdit = (sp: string, currentVal: number) => {
     setEditingSp(sp);
     setEditingVal(String(currentVal || 0));
@@ -33,6 +38,36 @@ export const SalespersonTable: React.FC<SalespersonTableProps> = ({
     const num = parseFloat(editingVal) || 0;
     onUpdateOtherAmount(sp, num);
     setEditingSp(null);
+  };
+
+  const handleOpenRateModal = (sp: string) => {
+    const cfg = configs[sp];
+    let initialVal = '7';
+    if (cfg?.customNewRate !== undefined && cfg?.customNewRate !== null) {
+      initialVal = String(Math.round(cfg.customNewRate * 1000) / 10);
+    } else if (cfg?.role === '非自主招生课程顾问') {
+      initialVal = '5';
+    }
+    setRateModalSp(sp);
+    setRateModalVal(initialVal);
+  };
+
+  const handleSaveCustomRate = () => {
+    if (!rateModalSp) return;
+    const parsed = parseFloat(rateModalVal);
+    if (isNaN(parsed) || parsed < 0 || parsed > 100) {
+      alert('请输入有效的百分比 (0-100)');
+      return;
+    }
+    const currentRole = configs[rateModalSp]?.role || '普通课程顾问';
+    onUpdateRole(rateModalSp, currentRole, parsed / 100);
+    setRateModalSp(null);
+  };
+
+  const handleResetCustomRate = (sp: string) => {
+    const currentRole = configs[sp]?.role || '普通课程顾问';
+    onUpdateRole(sp, currentRole, null);
+    setRateModalSp(null);
   };
 
   // Totals calculation
@@ -106,11 +141,11 @@ export const SalespersonTable: React.FC<SalespersonTableProps> = ({
               <th className="py-3 px-3 text-right">续提(5%)</th>
               <th className="py-3 px-3 text-right">新提(7%/5%)</th>
               <th className="py-3 px-3 text-right">集提(5%)</th>
-              <th className="py-3 px-3 text-right font-bold text-[#5A5A40] bg-[#F0EFE9]">
-                总提成
-              </th>
               <th className="py-3 px-3 text-right font-bold text-[#C27838] bg-[#FAF2EB]">
                 奖金
+              </th>
+              <th className="py-3 px-3 text-right font-bold text-[#5A5A40] bg-[#F0EFE9]">
+                总提成
               </th>
               <th className="py-3 px-3 text-center">新报人数</th>
             </tr>
@@ -123,40 +158,84 @@ export const SalespersonTable: React.FC<SalespersonTableProps> = ({
                 </td>
               </tr>
             ) : (
-              summaries.map((s, idx) => (
-                <tr
-                  key={s.salesperson}
-                  className="hover:bg-[#FAF9F5] transition-colors"
-                >
-                  {/* 销售人 */}
-                  <td className="py-3 px-3.5 font-bold text-[#4A4A40] sticky left-0 bg-white z-10 shadow-2xs border-r border-[#E8E6DF]">
-                    <div className="flex items-center gap-1.5">
-                      {idx === 0 && (
-                        <span className="w-4 h-4 rounded-full bg-[#FAF2EB] text-[#C27838] flex items-center justify-center text-[10px] font-black border border-[#E8E6DF]">
-                          1
-                        </span>
-                      )}
-                      <span>{s.salesperson}</span>
-                    </div>
-                  </td>
+              summaries.map((s, idx) => {
+                const isMissing = isMissingSalesperson(s.salesperson);
+                const cfg = configs[s.salesperson];
+                return (
+                  <tr
+                    key={s.salesperson}
+                    className={`transition-colors ${
+                      isMissing
+                        ? 'bg-amber-50/90 hover:bg-amber-100/90 border-l-4 border-l-amber-500 font-medium'
+                        : 'hover:bg-[#FAF9F5]'
+                    }`}
+                  >
+                    {/* 销售人 */}
+                    <td className={`py-3 px-3.5 font-bold text-[#4A4A40] sticky left-0 z-10 shadow-2xs border-r border-[#E8E6DF] ${
+                      isMissing ? 'bg-amber-50' : 'bg-white'
+                    }`}>
+                      <div className="flex items-center gap-1.5">
+                        {isMissing ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                            {s.salesperson || '空缺销售人'}
+                          </span>
+                        ) : (
+                          <>
+                            {idx === 0 && (
+                              <span className="w-4 h-4 rounded-full bg-[#FAF2EB] text-[#C27838] flex items-center justify-center text-[10px] font-black border border-[#E8E6DF]">
+                                1
+                              </span>
+                            )}
+                            <span>{s.salesperson}</span>
+                          </>
+                        )}
+                      </div>
+                    </td>
 
-                  {/* 工作性质 */}
+                  {/* 工作性质与默认新报提成率 */}
                   <td className="py-2.5 px-3">
-                    <select
-                      value={s.role}
-                      onChange={(e) =>
-                        onUpdateRole(
-                          s.salesperson,
-                          e.target.value as SalespersonRole
-                        )
-                      }
-                      className="text-[11px] bg-[#F5F2EB] hover:bg-[#E8E6DF] border border-[#E8E6DF] rounded-md px-1.5 py-1 text-[#4A4A40] font-medium focus:outline-none focus:border-[#8C8C70]"
-                    >
-                      <option value="普通课程顾问">普通顾问 (新报7%)</option>
-                      <option value="非自主招生课程顾问">
-                        非自主招生 (新报5%)
-                      </option>
-                    </select>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <select
+                        value={
+                          cfg?.customNewRate !== undefined && cfg?.customNewRate !== null
+                            ? (cfg.customNewRate === 0.05 && cfg.role === '非自主招生课程顾问' ? '非自主招生课程顾问' : 'CUSTOM')
+                            : s.role
+                        }
+                        onChange={(e) => {
+                          if (e.target.value === 'CUSTOM') {
+                            handleOpenRateModal(s.salesperson);
+                          } else if (e.target.value === '非自主招生课程顾问') {
+                            onUpdateRole(s.salesperson, '非自主招生课程顾问', 0.05);
+                          } else {
+                            onUpdateRole(s.salesperson, '普通课程顾问', null);
+                          }
+                        }}
+                        className="text-[11px] bg-[#F5F2EB] hover:bg-[#E8E6DF] border border-[#E8E6DF] rounded-md px-1.5 py-1 text-[#4A4A40] font-medium focus:outline-none focus:border-[#8C8C70]"
+                      >
+                        <option value="普通课程顾问">普通顾问 (新报7%)</option>
+                        <option value="非自主招生课程顾问">
+                          非自主招生 (新报5%)
+                        </option>
+                        <option value="CUSTOM">
+                          {cfg?.customNewRate !== undefined && cfg?.customNewRate !== null
+                            ? `自定义默认 (${Math.round(cfg.customNewRate * 1000) / 10}%)`
+                            : '自定义新报比例...'}
+                        </option>
+                      </select>
+
+                      {cfg?.customNewRate !== undefined && cfg?.customNewRate !== null && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenRateModal(s.salesperson)}
+                          className="inline-flex items-center gap-0.5 text-[10px] bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 font-bold px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                          title="点击修改或恢复专属默认新报比例"
+                        >
+                          <Percent className="w-2.5 h-2.5" />
+                          默认 {Math.round(cfg.customNewRate * 1000) / 10}%
+                        </button>
+                      )}
+                    </div>
                   </td>
 
                   {/* 续费合计 */}
@@ -226,11 +305,6 @@ export const SalespersonTable: React.FC<SalespersonTableProps> = ({
                     ¥{s.intensiveCommission.toLocaleString()}
                   </td>
 
-                  {/* 总提成 */}
-                  <td className="py-3 px-3 text-right font-bold text-[#5A5A40] bg-[#F0EFE9]">
-                    ¥{s.totalCommission.toLocaleString()}
-                  </td>
-
                   {/* 奖金 */}
                   <td className="py-3 px-3 text-right font-bold text-[#C27838] bg-[#FAF2EB]">
                     <div
@@ -242,6 +316,11 @@ export const SalespersonTable: React.FC<SalespersonTableProps> = ({
                     </div>
                   </td>
 
+                  {/* 总提成 */}
+                  <td className="py-3 px-3 text-right font-bold text-[#5A5A40] bg-[#F0EFE9]">
+                    ¥{s.totalCommission.toLocaleString()}
+                  </td>
+
                   {/* 新报人数 */}
                   <td className="py-3 px-3 text-center font-medium">
                     <span className="inline-block bg-[#F5F2EB] text-[#5A5A40] border border-[#E8E6DF] px-2 py-0.5 rounded-full font-bold">
@@ -249,8 +328,9 @@ export const SalespersonTable: React.FC<SalespersonTableProps> = ({
                     </span>
                   </td>
                 </tr>
-              ))
-            )}
+              );
+            })
+          )}
           </tbody>
 
           {/* Footer Totals */}
@@ -285,11 +365,11 @@ export const SalespersonTable: React.FC<SalespersonTableProps> = ({
                 <td className="py-3.5 px-3 text-right">
                   ¥{totals.intensiveCommission.toLocaleString()}
                 </td>
-                <td className="py-3.5 px-3 text-right text-[#5A5A40] bg-[#F0EFE9] font-black">
-                  ¥{totals.totalCommission.toLocaleString()}
-                </td>
                 <td className="py-3.5 px-3 text-right text-[#C27838] bg-[#FAF2EB] font-black">
                   ¥{totals.bonus.toLocaleString()}
+                </td>
+                <td className="py-3.5 px-3 text-right text-[#5A5A40] bg-[#F0EFE9] font-black">
+                  ¥{totals.totalCommission.toLocaleString()}
                 </td>
                 <td className="py-3.5 px-3 text-center text-[#4A4A40]">
                   {totals.newSignupCount} 人
@@ -299,6 +379,117 @@ export const SalespersonTable: React.FC<SalespersonTableProps> = ({
           )}
         </table>
       </div>
+
+      {/* Modal for setting custom default new signup commission rate */}
+      {rateModalSp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A4A40]/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border border-[#E8E6DF]">
+            <div className="flex items-center justify-between pb-3 border-b border-[#E8E6DF]">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-[#8C8C70] text-white flex items-center justify-center font-bold">
+                  <Percent className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#5A5A40]">
+                    设置【{rateModalSp}】新报默认提成比例
+                  </h3>
+                  <p className="text-[11px] text-[#8A8A70]">
+                    专属设定新报记录默认提成百分比
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setRateModalSp(null)}
+                className="p-1 text-[#A8A890] hover:text-[#5A5A40] rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="py-4 space-y-4 text-xs text-[#4A4A40]">
+              <div className="p-3 bg-[#FAF9F5] border border-[#E8E6DF] rounded-xl space-y-2">
+                <label className="block font-semibold text-[#5A5A40]">
+                  快速快捷预设
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateRole(rateModalSp, '普通课程顾问', null);
+                      setRateModalSp(null);
+                    }}
+                    className="flex-1 py-1.5 px-2 bg-white hover:bg-[#F5F2EB] border border-[#E8E6DF] rounded-lg text-center font-medium text-[#4A4A40] cursor-pointer"
+                  >
+                    普通顾问 (7%)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateRole(rateModalSp, '非自主招生课程顾问', 0.05);
+                      setRateModalSp(null);
+                    }}
+                    className="flex-1 py-1.5 px-2 bg-white hover:bg-[#F5F2EB] border border-[#E8E6DF] rounded-lg text-center font-medium text-[#4A4A40] cursor-pointer"
+                  >
+                    非自主招生 (5%)
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-[#5A5A40] mb-1.5">
+                  自定义默认百分比 (%)
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="100"
+                    value={rateModalVal}
+                    onChange={(e) => setRateModalVal(e.target.value)}
+                    placeholder="如 5 代表 5%"
+                    className="w-full pl-3 pr-8 py-2 text-sm border border-[#8C8C70] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8C8C70]/30 font-bold text-[#4A4A40]"
+                    autoFocus
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-[#8A8A70] font-bold">
+                    %
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#8A8A70] mt-1.5 leading-relaxed">
+                  提示：设置后，无论表格更新、导入新数据还是重新刷新，该销售人员的新报记录均默认按此比例（如 5%）自动核算，不会变回 7%。
+                </p>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-[#E8E6DF] flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => handleResetCustomRate(rateModalSp)}
+                className="px-2.5 py-1.5 text-xs text-[#8C8C70] hover:text-[#5A5A40] underline flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCcw className="w-3 h-3" /> 恢复标准角色规则
+              </button>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRateModalSp(null)}
+                  className="px-3 py-1.5 text-xs font-semibold text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded-lg cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveCustomRate}
+                  className="px-4 py-1.5 text-xs font-semibold text-white bg-[#8C8C70] hover:bg-[#7A7A60] rounded-lg shadow-2xs cursor-pointer"
+                >
+                  保存设置
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
