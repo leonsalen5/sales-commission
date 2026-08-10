@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #FDFCF9;
+    color: #4A4A40;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  }
+}
+
+/* Custom Natural Tones utility helpers */
+.bg-natural-bg { background-color: #FDFCF9; }
+.bg-natural-card { background-color: #FFFFFF; }
+.bg-natural-subtle { background-color: #F5F2EB; }
+.bg-natural-hover { background-color: #FAF9F5; }
+.bg-natural-olive { background-color: #8C8C70; }
+.bg-natural-olive-dark { background-color: #7A7A60; }
+.bg-natural-olive-light { background-color: #F0EFE9; }
+.bg-natural-terracotta-bg { background-color: #FAF2EB; }
+
+.border-natural { border-color: #E8E6DF; }
+.border-natural-subtle { border-color: #F0EEE6; }
+
+.text-natural-main { color: #4A4A40; }
+.text-natural-heading { color: #5A5A40; }
+.text-natural-muted { color: #8A8A70; }
+.text-natural-dim { color: #A8A890; }
+.text-natural-olive { color: #8C8C70; }
+.text-natural-terracotta { color: #C27838; }

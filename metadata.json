@@ -1,0 +1,6 @@
+{
+  "name": "培训学校提成与奖金统计系统",
+  "description": "培训学校月度销售提成、教师提成及销售奖金统计导出系统",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
