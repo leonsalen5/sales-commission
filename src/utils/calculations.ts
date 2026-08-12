@@ -510,8 +510,20 @@ export function computeSummaryForMonths(
   let salesCommission = 0;
   let bonus = 0;
 
+  // Pre-group records by month to avoid redundant O(N) array scans
+  const recordsByMonth = new Map<string, SalesRecord[]>();
+  for (const r of filtered) {
+    let list = recordsByMonth.get(r.month);
+    if (!list) {
+      list = [];
+      recordsByMonth.set(r.month, list);
+    }
+    list.push(r);
+  }
+
   for (const m of months) {
-    const spSummaries = generateSalespersonSummaries(records, configs, [m]);
+    const monthRecords = recordsByMonth.get(m) || [];
+    const spSummaries = generateSalespersonSummaries(monthRecords, configs, [m]);
     spSummaries.forEach((s) => {
       salesCommission += s.totalCommission;
       bonus += s.bonus;

@@ -1,7 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { SalesRecord, SalespersonConfig } from '../types';
 import { calculateRecordDetails, isMissingSalesperson } from '../utils/calculations';
-import { Search, Filter, ListCheck, ArrowUpDown, Pencil, Trash2, AlertTriangle } from 'lucide-react';
+import { Search, Filter, ListCheck, ArrowUpDown, Pencil, Trash2, AlertTriangle, ChevronLeft, ChevronRight, Zap } from 'lucide-react';
 
 interface DetailRecordsTableProps {
   records: SalesRecord[];
@@ -22,12 +22,21 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
   const [teacherFilter, setTeacherFilter] = useState<string>('ALL');
   const [recordToDelete, setRecordToDelete] = useState<SalesRecord | null>(null);
 
+  // Pagination state for ultra-fast DOM rendering on 1000-2000+ items
+  const [pageSize, setPageSize] = useState<number | 'ALL'>(50);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
   // Helper to identify missing/empty teacher
   const isMissingTeacher = (teacher?: string) => {
     if (!teacher) return true;
     const trimmed = teacher.trim();
     return trimmed === '' || trimmed === '无' || trimmed === '-' || trimmed === '(无)';
   };
+
+  // Reset pagination when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [typeFilter, salespersonFilter, teacherFilter, searchKey, pageSize]);
 
   // Unique lists for filters
   const salespersons = useMemo(() => {
@@ -102,6 +111,18 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
       return true;
     });
   }, [calculatedRecords, typeFilter, salespersonFilter, teacherFilter, searchKey]);
+
+  // Pagination slicing
+  const totalPages = useMemo(() => {
+    if (pageSize === 'ALL' || filteredRecords.length === 0) return 1;
+    return Math.ceil(filteredRecords.length / pageSize);
+  }, [filteredRecords.length, pageSize]);
+
+  const displayedRecords = useMemo(() => {
+    if (pageSize === 'ALL') return filteredRecords;
+    const start = (currentPage - 1) * pageSize;
+    return filteredRecords.slice(start, start + pageSize);
+  }, [filteredRecords, currentPage, pageSize]);
 
   const totalFilteredAmount = filteredRecords.reduce((s, r) => s + r.amount, 0);
   const totalSalesCommission = filteredRecords.reduce(
@@ -255,7 +276,7 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
                 </td>
               </tr>
             ) : (
-              filteredRecords.map((r) => {
+              displayedRecords.map((r) => {
                 const isMissing = isMissingSalesperson(r.salesperson);
                 return (
                   <tr
@@ -391,6 +412,80 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
           )}
         </table>
       </div>
+
+      {/* Pagination Controls Footer */}
+      {filteredRecords.length > 0 && (
+        <div className="px-5 py-3 bg-[#FAF9F5] border-t border-[#E8E6DF] flex flex-wrap items-center justify-between gap-3 text-xs text-[#5A5A40]">
+          <div className="flex items-center gap-3">
+            <span className="text-[#8A8A70] flex items-center gap-1">
+              <Zap className="w-3.5 h-3.5 text-amber-600" />
+              每页视图:
+            </span>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(e.target.value === 'ALL' ? 'ALL' : Number(e.target.value))}
+              className="px-2.5 py-1 bg-white border border-[#E8E6DF] rounded-lg font-medium text-xs focus:outline-none focus:border-[#8C8C70] cursor-pointer shadow-2xs"
+            >
+              <option value={50}>50 条 / 页 (推荐流畅)</option>
+              <option value={100}>100 条 / 页</option>
+              <option value={200}>200 条 / 页</option>
+              <option value={500}>500 条 / 页</option>
+              <option value="ALL">显示全部 ({filteredRecords.length} 笔)</option>
+            </select>
+            <span className="text-[#8A8A70]">
+              显示第{' '}
+              <strong className="text-[#4A4A40] font-mono">
+                {pageSize === 'ALL' ? 1 : (currentPage - 1) * pageSize + 1}
+              </strong>{' '}
+              -{' '}
+              <strong className="text-[#4A4A40] font-mono">
+                {pageSize === 'ALL'
+                  ? filteredRecords.length
+                  : Math.min(currentPage * pageSize, filteredRecords.length)}
+              </strong>{' '}
+              条，共 <strong className="text-[#5E7A56] font-mono font-bold">{filteredRecords.length}</strong> 条符合条件的明细记录
+            </span>
+          </div>
+
+          {pageSize !== 'ALL' && totalPages > 1 && (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setCurrentPage(1)}
+                disabled={currentPage === 1}
+                className="px-2.5 py-1 text-xs rounded-md bg-white border border-[#E8E6DF] hover:bg-[#F5F2EB] disabled:opacity-30 disabled:hover:bg-white font-medium transition-colors cursor-pointer"
+              >
+                首页
+              </button>
+              <button
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-2 py-1 text-xs rounded-md bg-white border border-[#E8E6DF] hover:bg-[#F5F2EB] disabled:opacity-30 disabled:hover:bg-white font-medium transition-colors cursor-pointer flex items-center gap-0.5"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                上一页
+              </button>
+              <span className="px-3 text-xs font-bold text-[#4A4A40]">
+                {currentPage} / {totalPages} 页
+              </span>
+              <button
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="px-2 py-1 text-xs rounded-md bg-white border border-[#E8E6DF] hover:bg-[#F5F2EB] disabled:opacity-30 disabled:hover:bg-white font-medium transition-colors cursor-pointer flex items-center gap-0.5"
+              >
+                下一页
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={currentPage === totalPages}
+                className="px-2.5 py-1 text-xs rounded-md bg-white border border-[#E8E6DF] hover:bg-[#F5F2EB] disabled:opacity-30 disabled:hover:bg-white font-medium transition-colors cursor-pointer"
+              >
+                末页
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Delete Record Confirmation Modal */}
       {recordToDelete && (

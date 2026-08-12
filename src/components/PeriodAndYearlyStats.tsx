@@ -84,29 +84,32 @@ export const PeriodAndYearlyStats: React.FC<PeriodAndYearlyStatsProps> = ({
     return { currentYear, lastYear, prevYear };
   }, [availableMonths, records]);
 
-  // Monthly data for 12 months (今年 vs 去年 vs 前年)
+  // Monthly data for 12 months (今年 vs 去年 vs 前年) - Optimized single-pass calculation
   const barChartData = useMemo(() => {
     const { currentYear, lastYear, prevYear } = yearsInfo;
 
-    const getVal = (year: number, monthNum: number, metric: 'PERFORMANCE' | 'COMMISSION') => {
-      const matchingRecords = records.filter((r) => {
-        const parts = r.month.split('-');
-        const rY = parseInt(parts[0], 10);
-        const rM = parseInt(parts[1], 10);
-        return rY === year && rM === monthNum;
-      });
+    // Single O(N) pass to aggregate performance & commission by year-month
+    const metricsMap = new Map<string, { performance: number; commission: number }>();
 
-      if (metric === 'PERFORMANCE') {
-        return matchingRecords.reduce((sum, r) => sum + r.amount, 0);
-      } else {
-        let comm = 0;
-        matchingRecords.forEach((r) => {
-          const calc = calculateRecordDetails(r, configs);
-          comm += calc.teacherCommissionAmount + calc.salesCommissionAmount;
-        });
-        return Math.round(comm * 100) / 100;
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      if (!r.month) continue;
+      const parts = r.month.split('-');
+      const rY = parseInt(parts[0], 10);
+      const rM = parseInt(parts[1], 10);
+      if (isNaN(rY) || isNaN(rM)) continue;
+
+      const key = `${rY}-${rM}`;
+      let entry = metricsMap.get(key);
+      if (!entry) {
+        entry = { performance: 0, commission: 0 };
+        metricsMap.set(key, entry);
       }
-    };
+
+      entry.performance += r.amount;
+      const calc = calculateRecordDetails(r, configs);
+      entry.commission += calc.teacherCommissionAmount + calc.salesCommissionAmount;
+    }
 
     const keyCurrent = `今年 (${currentYear}年)`;
     const keyLast = `去年 (${lastYear}年)`;
@@ -114,9 +117,13 @@ export const PeriodAndYearlyStats: React.FC<PeriodAndYearlyStatsProps> = ({
 
     const list = [];
     for (let m = 1; m <= 12; m++) {
-      const curVal = getVal(currentYear, m, barMetric);
-      const lastVal = getVal(lastYear, m, barMetric);
-      const prevVal = getVal(prevYear, m, barMetric);
+      const curData = metricsMap.get(`${currentYear}-${m}`) || { performance: 0, commission: 0 };
+      const lastData = metricsMap.get(`${lastYear}-${m}`) || { performance: 0, commission: 0 };
+      const prevData = metricsMap.get(`${prevYear}-${m}`) || { performance: 0, commission: 0 };
+
+      const curVal = barMetric === 'PERFORMANCE' ? curData.performance : Math.round(curData.commission * 100) / 100;
+      const lastVal = barMetric === 'PERFORMANCE' ? lastData.performance : Math.round(lastData.commission * 100) / 100;
+      const prevVal = barMetric === 'PERFORMANCE' ? prevData.performance : Math.round(prevData.commission * 100) / 100;
 
       list.push({
         month: `${m}月`,
