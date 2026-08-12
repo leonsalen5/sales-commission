@@ -19,7 +19,15 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
   const [searchKey, setSearchKey] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
   const [salespersonFilter, setSalespersonFilter] = useState<string>('ALL');
+  const [teacherFilter, setTeacherFilter] = useState<string>('ALL');
   const [recordToDelete, setRecordToDelete] = useState<SalesRecord | null>(null);
+
+  // Helper to identify missing/empty teacher
+  const isMissingTeacher = (teacher?: string) => {
+    if (!teacher) return true;
+    const trimmed = teacher.trim();
+    return trimmed === '' || trimmed === '无' || trimmed === '-' || trimmed === '(无)';
+  };
 
   // Unique lists for filters
   const salespersons = useMemo(() => {
@@ -32,14 +40,28 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
     return Array.from(set).sort();
   }, [records]);
 
+  const teachers = useMemo(() => {
+    const set = new Set<string>();
+    records.forEach((r) => {
+      if (r.teacher && !isMissingTeacher(r.teacher)) {
+        set.add(r.teacher.trim());
+      }
+    });
+    return Array.from(set).sort();
+  }, [records]);
+
   // Enhanced records with calculation
   const calculatedRecords = useMemo(() => {
     return records.map((r) => calculateRecordDetails(r, salespersonConfigs));
   }, [records, salespersonConfigs]);
 
-  // Missing salesperson count
+  // Missing salesperson & teacher count
   const missingSalespersonCount = useMemo(() => {
     return calculatedRecords.filter((r) => isMissingSalesperson(r.salesperson)).length;
+  }, [calculatedRecords]);
+
+  const missingTeacherCount = useMemo(() => {
+    return calculatedRecords.filter((r) => isMissingTeacher(r.teacher)).length;
   }, [calculatedRecords]);
 
   // Filtered list
@@ -52,6 +74,15 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
       } else if (
         salespersonFilter !== 'ALL' &&
         r.salesperson?.trim() !== salespersonFilter
+      ) {
+        return false;
+      }
+
+      if (teacherFilter === 'MISSING') {
+        if (!isMissingTeacher(r.teacher)) return false;
+      } else if (
+        teacherFilter !== 'ALL' &&
+        r.teacher?.trim() !== teacherFilter
       ) {
         return false;
       }
@@ -70,7 +101,7 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
 
       return true;
     });
-  }, [calculatedRecords, typeFilter, salespersonFilter, searchKey]);
+  }, [calculatedRecords, typeFilter, salespersonFilter, teacherFilter, searchKey]);
 
   const totalFilteredAmount = filteredRecords.reduce((s, r) => s + r.amount, 0);
   const totalSalesCommission = filteredRecords.reduce(
@@ -145,6 +176,27 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
             {salespersons.map((sp) => (
               <option key={sp} value={sp}>
                 {sp}
+              </option>
+            ))}
+          </select>
+
+          {/* Teacher filter */}
+          <select
+            value={teacherFilter}
+            onChange={(e) => setTeacherFilter(e.target.value)}
+            className={`px-2.5 py-1.5 text-xs border rounded-lg font-medium focus:outline-none ${
+              teacherFilter === 'MISSING'
+                ? 'bg-amber-100 border-amber-300 text-amber-900 font-bold'
+                : 'bg-white border-[#E8E6DF] text-[#4A4A40] focus:border-[#8C8C70]'
+            }`}
+          >
+            <option value="ALL">全部授课老师</option>
+            <option value="MISSING" className="font-bold text-amber-700">
+              ⚠️ 未指定/空值老师 ({missingTeacherCount} 笔)
+            </option>
+            {teachers.map((t) => (
+              <option key={t} value={t}>
+                {t}
               </option>
             ))}
           </select>
