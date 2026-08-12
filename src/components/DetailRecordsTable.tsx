@@ -191,7 +191,7 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
               <th className="py-2.5 px-3 text-right font-bold text-[#5E7A56] bg-[#F0F5EF]">
                 老师提成金额
               </th>
-              <th className="py-2.5 px-3">备注</th>
+              <th className="py-2.5 px-3 max-w-[220px] min-w-[100px]">备注</th>
               <th className="py-2.5 px-3 text-center">操作</th>
             </tr>
           </thead>
@@ -282,7 +282,7 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
                     <td className="py-2.5 px-3 text-right font-bold text-[#5E7A56] bg-[#F0F5EF]/50">
                       ¥{r.teacherCommissionAmount.toLocaleString()}
                     </td>
-                    <td className="py-2.5 px-3 text-[#8A8A70] text-[11px] max-w-xs truncate">
+                    <td className="py-2.5 px-3 text-[#8A8A70] text-[11px] max-w-[220px] min-w-[100px] whitespace-normal break-words leading-relaxed">
                       {r.notes || '-'}
                     </td>
                     <td className="py-2.5 px-3 text-center">

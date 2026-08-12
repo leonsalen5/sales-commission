@@ -139,7 +139,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               onClick={onOpenChangePasswordModal}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded-lg transition-colors border border-[#E8E6DF] cursor-pointer"
-              title="修改权限验证密码"
+              title="凭借管理权限码修改密码"
             >
               <ShieldCheck className="w-3.5 h-3.5 text-[#8C8C70]" />
               修改密码

@@ -264,40 +264,6 @@ export const PeriodAndYearlyStats: React.FC<PeriodAndYearlyStatsProps> = ({
             </button>
           </div>
 
-          {/* View Filter Tabs */}
-          <div className="flex items-center bg-white p-0.5 rounded-lg border border-[#E8E6DF] text-xs">
-            <button
-              onClick={() => setActiveTab('ALL')}
-              className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
-                activeTab === 'ALL'
-                  ? 'bg-[#8C8C70] text-white font-bold'
-                  : 'text-[#5A5A40] hover:bg-[#FAF9F5]'
-              }`}
-            >
-              全部阶段
-            </button>
-            <button
-              onClick={() => setActiveTab('PERIOD')}
-              className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
-                activeTab === 'PERIOD'
-                  ? 'bg-[#8C8C70] text-white font-bold'
-                  : 'text-[#5A5A40] hover:bg-[#FAF9F5]'
-              }`}
-            >
-              近1年/半年/3月
-            </button>
-            <button
-              onClick={() => setActiveTab('YEARLY')}
-              className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
-                activeTab === 'YEARLY'
-                  ? 'bg-[#8C8C70] text-white font-bold'
-                  : 'text-[#5A5A40] hover:bg-[#FAF9F5]'
-              }`}
-            >
-              按年份
-            </button>
-          </div>
-
           {/* Expand/Collapse Toggle */}
           <button
             onClick={() => setIsExpanded(!isExpanded)}
@@ -568,6 +534,53 @@ export const PeriodAndYearlyStats: React.FC<PeriodAndYearlyStatsProps> = ({
           )}
 
           {/* Section B: Detail Cards */}
+          <div className="pt-2 flex flex-wrap items-center justify-between gap-3 bg-[#FAF9F5] p-3 rounded-xl border border-[#E8E6DF] shadow-2xs">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-md bg-[#8C8C70] text-white flex items-center justify-center font-bold text-xs shrink-0">
+                <Layers className="w-3.5 h-3.5" />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-[#4A4A40]">周期与年度数据统计卡片</h3>
+                <p className="text-[10px] text-[#8A8A70]">选择下方统计维度，即时对比滚动周期与历年明细数据</p>
+              </div>
+            </div>
+
+            {/* View Filter Tabs moved here for seamless scrolling/interaction */}
+            <div className="flex items-center bg-white p-1 rounded-lg border border-[#E8E6DF] text-xs shadow-2xs">
+              <span className="text-[11px] text-[#8A8A70] font-medium px-2 hidden sm:inline">筛选显示:</span>
+              <button
+                onClick={() => setActiveTab('ALL')}
+                className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer ${
+                  activeTab === 'ALL'
+                    ? 'bg-[#8C8C70] text-white font-bold shadow-2xs'
+                    : 'text-[#5A5A40] hover:bg-[#FAF9F5]'
+                }`}
+              >
+                全部阶段
+              </button>
+              <button
+                onClick={() => setActiveTab('PERIOD')}
+                className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer ${
+                  activeTab === 'PERIOD'
+                    ? 'bg-[#8C8C70] text-white font-bold shadow-2xs'
+                    : 'text-[#5A5A40] hover:bg-[#FAF9F5]'
+                }`}
+              >
+                近1年/半年/3月
+              </button>
+              <button
+                onClick={() => setActiveTab('YEARLY')}
+                className={`px-3 py-1 rounded-md font-medium transition-colors cursor-pointer ${
+                  activeTab === 'YEARLY'
+                    ? 'bg-[#8C8C70] text-white font-bold shadow-2xs'
+                    : 'text-[#5A5A40] hover:bg-[#FAF9F5]'
+                }`}
+              >
+                按年份
+              </button>
+            </div>
+          </div>
+
           {/* Section 1: 近1年 / 近半年 / 近3个月统计 */}
           {(activeTab === 'ALL' || activeTab === 'PERIOD') && (
             <div>

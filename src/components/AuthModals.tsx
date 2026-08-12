@@ -338,10 +338,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
     try {
       const newPwdHash = await hashString(newPassword);
       await onChangePassword(newPwdHash);
-      setSuccessMsg('密码修改成功！');
-      setTimeout(() => {
-        onClose();
-      }, 1000);
+      onClose();
     } catch (err: any) {
       setError(err.message || '修改密码失败，请重试');
     } finally {
