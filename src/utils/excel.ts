@@ -119,7 +119,7 @@ export function parseExcelFile(
     const rows: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
     if (rows.length === 0) return;
 
-    // Check headers of first few rows
+    // Check headers of first row
     const firstRow = rows[0] || {};
     const keys = Object.keys(firstRow);
 
@@ -131,41 +131,41 @@ export function parseExcelFile(
     let isExplicitDetailSheet = false;
 
     if (/明细|记录|流水|数据|Detail|Record/i.test(sheetName)) {
-      score += 50;
+      score += 100;
       isExplicitDetailSheet = true;
     }
-    // Penalize pure summary sheets like 销售提成与奖金统计表 / 老师提成合计表 / 项目销量统计表
+    // Penalize pure summary sheets like 销售提成与奖金统计表 / 老师提成合计表 / 项目销量统计表 / 类型分类汇总表
     if (/汇总|统计表|合计表|分类/i.test(sheetName) && !/明细|记录/i.test(sheetName)) {
-      score -= 30;
+      score -= 50;
     }
 
     keys.forEach((key) => {
       const cleanKey = key.trim();
-      if (/日期|时间|Date/i.test(cleanKey)) {
+      if (/^日期$|^收款日期$|^缴费日期$|^时间$|^Date$/i.test(cleanKey)) {
         hasDate = true;
-        score += 20;
+        score += 25;
       }
-      if (/收入|学生|学员|姓名|客户/i.test(cleanKey)) {
+      if (/^收入$|^学生$|^学员$|^姓名$|^客户$|^客户姓名$/i.test(cleanKey)) {
         hasIncome = true;
-        score += 20;
+        score += 25;
       }
-      if (/金额|费用|款项|实收/i.test(cleanKey)) {
+      if (/^金额$|^实收金额$|^学费$|^缴费金额$|^成交金额$/i.test(cleanKey)) {
         hasAmount = true;
-        score += 15;
+        score += 25;
       }
-      if (/销售人|销售|顾问|业绩归属/i.test(cleanKey)) {
+      if (/^销售人$|^销售$|^顾问$|^销售顾问$|^招生顾问$/i.test(cleanKey)) {
         hasSalesperson = true;
-        score += 15;
+        score += 25;
       }
-      if (/项目|课程|科目|班型/i.test(cleanKey)) score += 10;
-      if (/类型|类别|班级/i.test(cleanKey)) score += 10;
-      if (/老师|教师/i.test(cleanKey)) score += 10;
-      if (/月份|Month/i.test(cleanKey)) score += 15;
+      if (/^项目$|^课程$|^科目$|^班型$/i.test(cleanKey)) score += 10;
+      if (/^类型$|^类别$|^班级$/i.test(cleanKey)) score += 10;
+      if (/^老师$|^教师$|^任课老师$/i.test(cleanKey)) score += 10;
+      if (/^月份$|^所属月份$|^Month$/i.test(cleanKey)) score += 15;
     });
 
-    // Valid if it looks like individual sales records
+    // Valid if it looks like sales records table
     if ((hasIncome && hasAmount) || (hasDate && hasAmount) || (hasSalesperson && hasAmount)) {
-      score += Math.min(rows.length, 100);
+      score += Math.min(rows.length, 200);
       sheetCandidates.push({
         name: sheetName,
         worksheet,
@@ -205,6 +205,28 @@ export function parseExcelFile(
     sheetsToProcess = [{ name: firstSheetName, worksheet, score: 0, rows, isExplicitDetailSheet: false }];
   }
 
+  // Helper function to resolve column header from a row's keys
+  function resolveColumnKey(
+    keys: string[],
+    exactRegex: RegExp,
+    fuzzyRegex?: RegExp,
+    excludeRegex?: RegExp
+  ): string | undefined {
+    // 1. Try exact match first
+    const exactMatch = keys.find((k) => exactRegex.test(k.trim()));
+    if (exactMatch) return exactMatch;
+
+    // 2. Try fuzzy match without forbidden keywords
+    if (fuzzyRegex) {
+      return keys.find((k) => {
+        const trimmed = k.trim();
+        if (excludeRegex && excludeRegex.test(trimmed)) return false;
+        return fuzzyRegex.test(trimmed);
+      });
+    }
+    return undefined;
+  }
+
   const allRecords: SalesRecord[] = [];
   let recordCounter = 1;
 
@@ -218,57 +240,109 @@ export function parseExcelFile(
       sheetInferredMonth = `${y}-${m}`;
     }
 
+    if (sheet.rows.length === 0) return;
+
+    // Detect column mapping from the keys of the first row
+    const rowKeys = Object.keys(sheet.rows[0]);
+
+    const monthCol = resolveColumnKey(
+      rowKeys,
+      /^月份$|^所属月份$|^Month$/i,
+      /月份|所属月份|Month/i,
+      /人数|合计|统计/i
+    );
+
+    const dateCol = resolveColumnKey(
+      rowKeys,
+      /^日期$|^收款日期$|^缴费日期$|^时间$|^Date$|^录入日期$|^报名单日期$/i,
+      /日期|收款时间|缴费时间|Date/i,
+      /生[日号]|结业|截止|出生/i
+    );
+
+    const incomeCol = resolveColumnKey(
+      rowKeys,
+      /^收入$|^学生$|^学员$|^姓名$|^学员姓名$|^学生姓名$|^客户$|^客户姓名$|^缴费人$/i,
+      /学员|学生|客户姓名|学员姓名/i,
+      /销售|老师|顾问|合计|总计|提成/i
+    );
+
+    const projectCol = resolveColumnKey(
+      rowKeys,
+      /^项目$|^课程$|^科目$|^班型$|^项目名称$|^课程名称$|^购买项目$/i,
+      /项目|课程|科目|班型/i,
+      /销量|提成|奖金|人数|金额|合计/i
+    );
+
+    const typeCol = resolveColumnKey(
+      rowKeys,
+      /^类型$|^类别$|^班级$|^报名单类型$|^新续类别$|^新续$|^签约类型$/i,
+      /类型|类别|新续/i,
+      /工作性质|岗位|合计|提成/i
+    );
+
+    const amountCol = resolveColumnKey(
+      rowKeys,
+      /^金额$|^实收金额$|^实收$|^学费$|^缴费金额$|^成交金额$|^订单金额$|^收费金额$|^总金额$/i,
+      /金额|费用|款项|实收|学费/i,
+      /提成|奖金|其他|其它|返还|扣除|底薪|单价|退费|总提成|销售提成|老师提成|汇总/i
+    );
+
+    const salespersonCol = resolveColumnKey(
+      rowKeys,
+      /^销售人$|^销售$|^销售顾问$|^顾问$|^业绩归属$|^招生顾问$|^招生老师$|^销售人员$|^课程顾问$/i,
+      /销售人|销售顾问|招生顾问|课程顾问|业绩归属/i,
+      /提成|比例|率|%|奖金|金额|合计|工作性质|人数|单数/i
+    );
+
+    const teacherCol = resolveColumnKey(
+      rowKeys,
+      /^老师$|^教师$|^任课老师$|^任课教师$|^授课老师$|^带班老师$|^任课$/i,
+      /老师|教师|任课/i,
+      /提成|比例|率|%|奖金|金额|合计|招生|单数|服务/i
+    );
+
+    const notesCol = resolveColumnKey(
+      rowKeys,
+      /^备注$|^说明$|^Notes$|^Note$/i,
+      /备注|说明/i
+    );
+
     sheet.rows.forEach((row) => {
+      const explicitMonthVal = monthCol ? row[monthCol] : '';
       let explicitMonth = '';
-      let dateVal: any = '';
-      let incomeName = '';
-      let project = '';
-      let type = '';
-      let amount = 0;
-      let salesperson = '';
-      let teacher = '';
-      let notes = '';
-
-      for (const key of Object.keys(row)) {
-        const cleanKey = key.trim();
-        const val = row[key];
-
-        if (/^月份$|^所属月份$|^Month$/i.test(cleanKey)) {
-          const mStr = String(val).trim();
-          if (/^\d{4}-\d{2}$/.test(mStr)) {
-            explicitMonth = mStr;
-          } else {
-            const parsedM = parseExcelDate(val);
-            if (parsedM && parsedM.monthStr) explicitMonth = parsedM.monthStr;
+      if (explicitMonthVal) {
+        const mStr = String(explicitMonthVal).trim();
+        if (/^\d{4}-\d{2}$/.test(mStr)) {
+          explicitMonth = mStr;
+        } else {
+          const parsedM = parseExcelDate(explicitMonthVal);
+          if (parsedM && parsedM.monthStr && !parsedM.monthStr.startsWith('1970')) {
+            explicitMonth = parsedM.monthStr;
           }
-        } else if (/日期|时间|Date/i.test(cleanKey)) {
-          dateVal = val;
-        } else if (/收入|学生|学员|姓名|客户/i.test(cleanKey)) {
-          incomeName = String(val).trim();
-        } else if (/项目|课程|科目|班型/i.test(cleanKey)) {
-          project = String(val).trim();
-        } else if (/类型|类别|班级/i.test(cleanKey)) {
-          type = String(val).trim();
-        } else if (/金额|费用|款项|实收/i.test(cleanKey)) {
-          // Strip currency symbols and commas
-          const cleanedNum = String(val).replace(/[^0-9.-]/g, '');
-          amount = parseFloat(cleanedNum) || 0;
-        } else if (/销售人|销售|顾问|业绩归属/i.test(cleanKey)) {
-          salesperson = String(val).trim();
-        } else if (/老师|教师|任课老师/i.test(cleanKey)) {
-          teacher = String(val).trim();
-        } else if (/备注|说明|Notes/i.test(cleanKey)) {
-          notes = String(val).trim();
         }
       }
 
+      const dateVal = dateCol ? row[dateCol] : '';
+      const incomeName = incomeCol ? String(row[incomeCol] || '').trim() : '';
+      const project = projectCol ? String(row[projectCol] || '').trim() : '';
+      const rawType = typeCol ? String(row[typeCol] || '').trim() : '';
+      
+      let amount = 0;
+      if (amountCol && row[amountCol] !== undefined && row[amountCol] !== '') {
+        const cleanedNum = String(row[amountCol]).replace(/[^0-9.-]/g, '');
+        amount = parseFloat(cleanedNum) || 0;
+      }
+
+      const salesperson = salespersonCol ? String(row[salespersonCol] || '').trim() : '';
+      let teacher = teacherCol ? String(row[teacherCol] || '').trim() : '';
+      if (teacher === '(无)' || teacher === '无' || teacher === 'null' || teacher === 'undefined') {
+        teacher = '';
+      }
+
+      const notes = notesCol ? String(row[notesCol] || '').trim() : '';
+
       // Ignore summary header rows, total rows, or completely empty rows
-      if (
-        !incomeName &&
-        !salesperson &&
-        amount === 0 &&
-        !dateVal
-      ) {
+      if (!incomeName && !salesperson && amount === 0 && !dateVal) {
         return;
       }
       if (/合计|总计|汇总/i.test(incomeName) || /合计|总计/i.test(salesperson)) {
@@ -284,10 +358,10 @@ export function parseExcelFile(
         new Date().toISOString().substring(0, 7);
 
       // Standardize record type
-      let cleanType = type;
-      if (type.includes('新')) cleanType = '新';
-      else if (type.includes('续')) cleanType = '续';
-      else if (type.includes('集训')) cleanType = '集训';
+      let cleanType = rawType;
+      if (rawType.includes('续')) cleanType = '续';
+      else if (rawType.includes('集训')) cleanType = '集训';
+      else if (rawType.includes('新')) cleanType = '新';
       else cleanType = '新'; // Fallback
 
       allRecords.push({
@@ -300,8 +374,8 @@ export function parseExcelFile(
         type: cleanType,
         amount: Math.max(0, amount),
         salesperson: salesperson || '未名销售',
-        teacher: teacher === '(无)' ? '' : teacher || '',
-        notes: notes || '',
+        teacher: teacher,
+        notes: notes,
       });
     });
   });
