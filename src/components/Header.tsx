@@ -20,7 +20,8 @@ interface HeaderProps {
   onExportExcel: () => void;
   onResetData: () => void;
   onOpenChangePasswordModal: () => void;
-  isVerifiedToday?: boolean;
+  isManagerAuthenticated?: boolean;
+  hasPassword?: boolean;
   batchCount: number;
   recordCount: number;
 }
@@ -33,7 +34,8 @@ export const Header: React.FC<HeaderProps> = ({
   onExportExcel,
   onResetData,
   onOpenChangePasswordModal,
-  isVerifiedToday = false,
+  isManagerAuthenticated = false,
+  hasPassword = false,
   batchCount,
   recordCount,
 }) => {
@@ -57,21 +59,29 @@ export const Header: React.FC<HeaderProps> = ({
                 </span>
                 <span
                   className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${
-                    isVerifiedToday
+                    isManagerAuthenticated
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                      : hasPassword
+                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                      : 'bg-[#F5F2EB] text-[#8C8C70] border-[#E8E6DF]'
                   }`}
-                  title={isVerifiedToday ? '今日已完成权限验证' : '操作敏感数据将触发密码验证'}
+                  title={
+                    isManagerAuthenticated
+                      ? '当前设备已获得管理权限，操作无需重复输入密码'
+                      : hasPassword
+                      ? '敏感管理操作需输入管理员密码'
+                      : '系统未设置密码，首次操作需管理者输入权限码'
+                  }
                 >
-                  {isVerifiedToday ? (
+                  {isManagerAuthenticated ? (
                     <>
                       <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                      今日已验证
+                      已授权管理
                     </>
                   ) : (
                     <>
                       <Lock className="w-3 h-3 text-amber-600" />
-                      密码保护中
+                      {hasPassword ? '密码保护中' : '需权限码初始化'}
                     </>
                   )}
                 </span>
@@ -111,7 +121,7 @@ export const Header: React.FC<HeaderProps> = ({
               disabled={recordCount === 0}
               className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg transition-all border ${
                 recordCount > 0
-                  ? 'bg-[#F0F5EF] text-[#5E7A56] border-[#D4E3D2] hover:bg-[#E3EFE1] shadow-2xs cursor-pointer'
+                  ? 'bg-[#F0F5EF] text-[#5E7A56] border-[#D4E3D2] hover:bg-[#E8EFE1] shadow-2xs cursor-pointer'
                   : 'bg-[#F5F2EB] text-[#A8A890] border-[#E8E6DF] cursor-not-allowed'
               }`}
             >
@@ -139,10 +149,10 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               onClick={onOpenChangePasswordModal}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded-lg transition-colors border border-[#E8E6DF] cursor-pointer"
-              title="凭借管理权限码修改密码"
+              title="凭借专属权限码设置或修改密码"
             >
               <ShieldCheck className="w-3.5 h-3.5 text-[#8C8C70]" />
-              修改密码
+              {hasPassword ? '修改密码' : '设置密码'}
             </button>
 
             <button

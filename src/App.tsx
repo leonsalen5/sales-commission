@@ -62,34 +62,31 @@ export default function App() {
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState<boolean>(false);
   const [recordToEdit, setRecordToEdit] = useState<SalesRecord | null>(null);
 
-  // Auth Modals & Verification State
+  // Auth Modals & Persistent Verification State
   const [isSetPasswordModalOpen, setIsSetPasswordModalOpen] = useState<boolean>(false);
   const [isVerifyPasswordModalOpen, setIsVerifyPasswordModalOpen] = useState<boolean>(false);
   const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState<boolean>(false);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
-  const [verifiedDate, setVerifiedDate] = useState<string>(
-    () => localStorage.getItem('auth_verified_date') || ''
+  const [isManagerAuthenticated, setIsManagerAuthenticated] = useState<boolean>(
+    () => localStorage.getItem('auth_manager_authenticated') === 'true'
   );
-
-  const isVerifiedToday = verifiedDate === getTodayDateString();
 
   // Guard protected sensitive actions
   const runWithAuth = (action: () => void) => {
-    const today = getTodayDateString();
-    const storedVerified = localStorage.getItem('auth_verified_date');
+    const isAuth = localStorage.getItem('auth_manager_authenticated') === 'true';
 
-    if (storedVerified === today) {
+    if (isAuth) {
       action();
       return;
     }
 
+    setPendingAction(() => action);
+
     if (!data.passwordHash) {
-      setPendingAction(() => action);
       setIsSetPasswordModalOpen(true);
       return;
     }
 
-    setPendingAction(() => action);
     setIsVerifyPasswordModalOpen(true);
   };
 
@@ -373,9 +370,8 @@ export default function App() {
       setData(updated);
     }
 
-    const today = getTodayDateString();
-    localStorage.setItem('auth_verified_date', today);
-    setVerifiedDate(today);
+    localStorage.setItem('auth_manager_authenticated', 'true');
+    setIsManagerAuthenticated(true);
 
     if (pendingAction) {
       pendingAction();
@@ -384,9 +380,8 @@ export default function App() {
   };
 
   const handleVerifySuccess = () => {
-    const today = getTodayDateString();
-    localStorage.setItem('auth_verified_date', today);
-    setVerifiedDate(today);
+    localStorage.setItem('auth_manager_authenticated', 'true');
+    setIsManagerAuthenticated(true);
 
     if (pendingAction) {
       pendingAction();
@@ -414,9 +409,8 @@ export default function App() {
       setData(updated);
     }
 
-    const today = getTodayDateString();
-    localStorage.setItem('auth_verified_date', today);
-    setVerifiedDate(today);
+    localStorage.setItem('auth_manager_authenticated', 'true');
+    setIsManagerAuthenticated(true);
   };
 
   // Action: Download Sample Template
@@ -508,7 +502,8 @@ export default function App() {
         onExportExcel={() => runWithAuth(handleExportExcel)}
         onResetData={() => runWithAuth(() => setIsResetConfirmOpen(true))}
         onOpenChangePasswordModal={() => setIsChangePasswordModalOpen(true)}
-        isVerifiedToday={isVerifiedToday}
+        isManagerAuthenticated={isManagerAuthenticated}
+        hasPassword={!!data.passwordHash}
         batchCount={data.batches.length}
         recordCount={filteredRecords.length}
       />
@@ -632,6 +627,7 @@ export default function App() {
         }}
         currentPasswordHash={data.passwordHash || ''}
         onSuccess={handleVerifySuccess}
+        onOpenChangePassword={() => setIsChangePasswordModalOpen(true)}
       />
 
       <ChangePasswordModal

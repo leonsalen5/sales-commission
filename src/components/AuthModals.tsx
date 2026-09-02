@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Lock, KeyRound, ShieldCheck, X, Eye, EyeOff } from 'lucide-react';
+import { Lock, KeyRound, ShieldCheck, X, Eye, EyeOff, ShieldAlert, CheckCircle2 } from 'lucide-react';
 import { hashString } from '../utils/crypto';
 
 interface SetInitialPasswordModalProps {
@@ -13,6 +13,7 @@ export const SetInitialPasswordModal: React.FC<SetInitialPasswordModalProps> = (
   onClose,
   onSetPassword,
 }) => {
+  const [permissionCode, setPermissionCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -21,6 +22,7 @@ export const SetInitialPasswordModal: React.FC<SetInitialPasswordModalProps> = (
 
   useEffect(() => {
     if (isOpen) {
+      setPermissionCode('');
       setPassword('');
       setConfirmPassword('');
       setError('');
@@ -32,6 +34,20 @@ export const SetInitialPasswordModal: React.FC<SetInitialPasswordModalProps> = (
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!permissionCode.trim()) {
+      setError('请输入管理员专属权限码');
+      return;
+    }
+
+    // Verify Admin Permission Code (1502)
+    const codeHash = await hashString(permissionCode);
+    const expectedCodeHash = await hashString('1502');
+
+    if (codeHash !== expectedCodeHash) {
+      setError('权限码不正确！仅拥有专属权限码的管理者方可设置系统密码');
+      return;
+    }
+
     if (!password.trim()) {
       setError('请输入新密码');
       return;
@@ -67,8 +83,8 @@ export const SetInitialPasswordModal: React.FC<SetInitialPasswordModalProps> = (
               <Lock className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-[#5A5A40]">设置系统操作密码</h3>
-              <p className="text-xs text-[#8A8A70]">初次使用请先初始化您的数据保护密码</p>
+              <h3 className="text-base font-bold text-[#5A5A40]">首次初始化管理员密码</h3>
+              <p className="text-xs text-[#8A8A70]">系统首次使用需由管理者输入专属权限码设置密码</p>
             </div>
           </div>
           <button
@@ -79,10 +95,32 @@ export const SetInitialPasswordModal: React.FC<SetInitialPasswordModalProps> = (
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-5 space-y-4">
+        <div className="mt-4 p-3 bg-[#FAF9F5] border border-[#E8E6DF] rounded-xl text-xs text-[#5A5A40] flex items-start gap-2.5">
+          <ShieldAlert className="w-4 h-4 text-[#8C8C70] shrink-0 mt-0.5" />
+          <div className="leading-relaxed">
+            <span className="font-semibold text-[#5A5A40]">权限安全说明：</span>
+            本系统仅需管理者在首次使用时输入专属权限码设置密码。设置后将长期有效，普通人员无需做任何密码相关操作。
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} className="mt-4 space-y-3.5">
           <div>
             <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
-              设置新密码
+              管理员专属权限码 <span className="text-rose-500">*</span>
+            </label>
+            <input
+              type="password"
+              value={permissionCode}
+              onChange={(e) => setPermissionCode(e.target.value)}
+              placeholder="请输入管理员专属权限码"
+              className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all"
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
+              设置管理员操作密码 <span className="text-rose-500">*</span>
             </label>
             <div className="relative">
               <input
@@ -91,7 +129,6 @@ export const SetInitialPasswordModal: React.FC<SetInitialPasswordModalProps> = (
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="请输入密码（至少4位）"
                 className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all pr-10"
-                autoFocus
               />
               <button
                 type="button"
@@ -105,19 +142,19 @@ export const SetInitialPasswordModal: React.FC<SetInitialPasswordModalProps> = (
 
           <div>
             <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
-              确认新密码
+              确认管理员密码 <span className="text-rose-500">*</span>
             </label>
             <input
               type={showPassword ? 'text' : 'password'}
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="请再次输入新密码"
+              placeholder="请再次输入设置的密码"
               className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all"
             />
           </div>
 
           {error && (
-            <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
+            <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-600 font-medium">
               {error}
             </div>
           )}
@@ -135,7 +172,7 @@ export const SetInitialPasswordModal: React.FC<SetInitialPasswordModalProps> = (
               disabled={isSubmitting}
               className="px-5 py-2 text-xs font-semibold text-white bg-[#8C8C70] hover:bg-[#7A7A60] rounded-lg shadow-sm transition-all cursor-pointer disabled:opacity-50"
             >
-              {isSubmitting ? '保存中...' : '确认设置并继续'}
+              {isSubmitting ? '保存中...' : '确认设置并永久授权'}
             </button>
           </div>
         </form>
@@ -149,6 +186,7 @@ interface VerifyPasswordModalProps {
   onClose: () => void;
   currentPasswordHash: string;
   onSuccess: () => void;
+  onOpenChangePassword?: () => void;
 }
 
 export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
@@ -156,9 +194,11 @@ export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
   onClose,
   currentPasswordHash,
   onSuccess,
+  onOpenChangePassword,
 }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberAuth, setRememberAuth] = useState(true);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -205,8 +245,8 @@ export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
               <KeyRound className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-[#5A5A40]">身份权限验证</h3>
-              <p className="text-xs text-[#8A8A70]">请输入密码以进行敏感操作</p>
+              <h3 className="text-base font-bold text-[#5A5A40]">管理员身份验证</h3>
+              <p className="text-xs text-[#8A8A70]">请输入密码以执行管理操作</p>
             </div>
           </div>
           <button
@@ -239,14 +279,32 @@ export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
-            <p className="mt-1 text-[11px] text-[#A8A890]">
-              * 验证成功后，同设备今日内无需再次输入密码
-            </p>
+            <div className="mt-2 flex items-center justify-between text-[11px]">
+              <span className="text-[#8A8A70] flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                验证通过后本设备长期有效，无需每日重输
+              </span>
+            </div>
           </div>
 
           {error && (
-            <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
+            <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-600 font-medium">
               {error}
+            </div>
+          )}
+
+          {onOpenChangePassword && (
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenChangePassword();
+                }}
+                className="text-xs text-[#8C8C70] hover:text-[#5A5A40] hover:underline font-medium cursor-pointer"
+              >
+                忘记密码？使用专属权限码修改密码 →
+              </button>
             </div>
           )}
 
@@ -288,7 +346,6 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
-  const [successMsg, setSuccessMsg] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
@@ -297,7 +354,6 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
       setNewPassword('');
       setConfirmPassword('');
       setError('');
-      setSuccessMsg('');
       setShowPassword(false);
     }
   }, [isOpen]);
@@ -307,7 +363,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!permissionCode.trim()) {
-      setError('请输入权限码');
+      setError('请输入管理员专属权限码');
       return;
     }
 
@@ -355,8 +411,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-[#5A5A40]">修改系统操作密码</h3>
-              <p className="text-xs text-[#8A8A70]">需要校验专属权限码方可进行修改</p>
+              <h3 className="text-base font-bold text-[#5A5A40]">修改/重置系统操作密码</h3>
+              <p className="text-xs text-[#8A8A70]">需要校验专属管理权限码方可进行修改</p>
             </div>
           </div>
           <button
@@ -370,13 +426,13 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
         <form onSubmit={handleSubmit} className="mt-5 space-y-4">
           <div>
             <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
-              管理权限码 <span className="text-red-500">*</span>
+              管理权限码 <span className="text-rose-500">*</span>
             </label>
             <input
               type="password"
               value={permissionCode}
               onChange={(e) => setPermissionCode(e.target.value)}
-              placeholder="请输入管理员权限码"
+              placeholder="请输入管理员专属权限码"
               className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all"
               autoFocus
             />
@@ -384,7 +440,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
           <div>
             <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
-              新密码
+              新操作密码 <span className="text-rose-500">*</span>
             </label>
             <div className="relative">
               <input
@@ -406,7 +462,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
           <div>
             <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
-              确认新密码
+              确认新密码 <span className="text-rose-500">*</span>
             </label>
             <input
               type={showPassword ? 'text' : 'password'}
@@ -418,14 +474,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
           </div>
 
           {error && (
-            <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
+            <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-600 font-medium">
               {error}
-            </div>
-          )}
-
-          {successMsg && (
-            <div className="p-2.5 bg-green-50 border border-green-200 rounded-lg text-xs text-green-700">
-              {successMsg}
             </div>
           )}
 
@@ -442,7 +492,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
               disabled={isSubmitting}
               className="px-5 py-2 text-xs font-semibold text-white bg-[#8C8C70] hover:bg-[#7A7A60] rounded-lg shadow-sm transition-all cursor-pointer disabled:opacity-50"
             >
-              {isSubmitting ? '提交中...' : '确认修改密码'}
+              {isSubmitting ? '提交中...' : '确认修改并授权'}
             </button>
           </div>
         </form>
@@ -450,3 +500,4 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
     </div>
   );
 };
+
