@@ -261,32 +261,57 @@ app.post('/api/import', (req, res) => {
 
     const data = getSystemData();
     const batchId = `batch_${Date.now()}`;
-    const targetMonth = month || records[0]?.month || '2026-07';
+    
+    // Collect all distinct months from records
+    const monthsInRecords = Array.from(new Set(records.map((r: any) => r.month))).filter(Boolean);
+    const isMultiMonth = monthsInRecords.length > 1;
 
     const totalAmount = records.reduce((sum: number, r: any) => sum + (parseFloat(r.amount) || 0), 0);
 
-    const newBatch: ImportBatch = {
-      id: batchId,
-      month: targetMonth,
-      fileName: fileName || `销售记录_${targetMonth}.xlsx`,
-      uploadedAt: new Date().toISOString(),
-      recordCount: records.length,
-      totalAmount,
-    };
+    const newBatches: ImportBatch[] = [];
+    if (isMultiMonth) {
+      monthsInRecords.forEach((m: any, idx: number) => {
+        const recsInMonth = records.filter((r: any) => r.month === m);
+        newBatches.push({
+          id: `${batchId}_m_${idx + 1}`,
+          month: m,
+          fileName: fileName ? `${fileName} (${m})` : `销售记录_${m}.xlsx`,
+          uploadedAt: new Date().toISOString(),
+          recordCount: recsInMonth.length,
+          totalAmount: recsInMonth.reduce((s: number, r: any) => s + (parseFloat(r.amount) || 0), 0),
+        });
+      });
+    } else {
+      const targetMonth = month || records[0]?.month || '2026-07';
+      newBatches.push({
+        id: batchId,
+        month: targetMonth,
+        fileName: fileName || `销售记录_${targetMonth}.xlsx`,
+        uploadedAt: new Date().toISOString(),
+        recordCount: records.length,
+        totalAmount,
+      });
+    }
 
-    const formattedRecords: SalesRecord[] = records.map((r: any, idx: number) => ({
-      id: `${batchId}_${idx + 1}`,
-      batchId,
-      month: targetMonth,
-      date: r.date || `${targetMonth}/1`,
-      incomeName: r.incomeName || '未名学生',
-      project: r.project || '通用课程',
-      type: r.type || '新',
-      amount: parseFloat(r.amount) || 0,
-      salesperson: r.salesperson || '未名销售',
-      teacher: r.teacher || '',
-      notes: r.notes || '',
-    }));
+    const formattedRecords: SalesRecord[] = records.map((r: any, idx: number) => {
+      const rMonth = r.month || month || '2026-07';
+      const rBatchId = isMultiMonth
+        ? `${batchId}_m_${Math.max(0, monthsInRecords.indexOf(rMonth)) + 1}`
+        : batchId;
+      return {
+        id: `${batchId}_${idx + 1}`,
+        batchId: rBatchId,
+        month: rMonth,
+        date: r.date || `${rMonth}/1`,
+        incomeName: r.incomeName || '未名学生',
+        project: r.project || '通用课程',
+        type: r.type || '新',
+        amount: parseFloat(r.amount) || 0,
+        salesperson: r.salesperson || '未名销售',
+        teacher: r.teacher || '',
+        notes: r.notes || '',
+      };
+    });
 
     // Check if salesperson exists in config, if not set default role
     formattedRecords.forEach((r) => {
@@ -300,11 +325,11 @@ app.post('/api/import', (req, res) => {
       }
     });
 
-    data.batches.unshift(newBatch);
+    data.batches.unshift(...newBatches);
     data.records.unshift(...formattedRecords);
     saveSystemData(data);
 
-    res.json({ success: true, batch: newBatch, count: formattedRecords.length, data });
+    res.json({ success: true, count: formattedRecords.length, data });
   } catch (err: any) {
     console.error('Import API error:', err);
     res.status(500).json({ error: err.message || '导入数据失败' });

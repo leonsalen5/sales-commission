@@ -91,6 +91,7 @@ export function parseExcelDate(val: any): { dateStr: string; monthStr: string } 
 
 /**
  * Parses raw Excel file buffer or ArrayBuffer into array of raw SalesRecord objects
+ * Supports multi-sheet workbooks, auto-detection of detailed records sheets, and multi-month files.
  */
 export function parseExcelFile(
   fileBuffer: ArrayBuffer,
@@ -99,75 +100,213 @@ export function parseExcelFile(
 ): SalesRecord[] {
   // Disable cellDates so Excel serial numbers are parsed without timezone shifts
   const workbook = XLSX.read(fileBuffer, { type: 'array', cellDates: false });
-  const firstSheetName = workbook.SheetNames[0];
-  const worksheet = workbook.Sheets[firstSheetName];
+  if (!workbook.SheetNames || workbook.SheetNames.length === 0) return [];
 
-  // Convert to array of objects
-  const rawRows: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
-  if (rawRows.length === 0) return [];
+  interface SheetCandidate {
+    name: string;
+    worksheet: XLSX.WorkSheet;
+    score: number;
+    rows: any[];
+    isExplicitDetailSheet: boolean;
+  }
 
-  const records: SalesRecord[] = [];
+  const sheetCandidates: SheetCandidate[] = [];
 
-  rawRows.forEach((row, index) => {
-    // Column header fuzzy matching
-    let dateVal = '';
-    let incomeName = '';
-    let project = '';
-    let type = '';
-    let amount = 0;
-    let salesperson = '';
-    let teacher = '';
-    let notes = '';
+  workbook.SheetNames.forEach((sheetName) => {
+    const worksheet = workbook.Sheets[sheetName];
+    if (!worksheet) return;
 
-    for (const key of Object.keys(row)) {
-      const cleanKey = key.trim();
-      const val = row[key];
+    const rows: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+    if (rows.length === 0) return;
 
-      if (/日期|时间|Date/i.test(cleanKey)) {
-        dateVal = val;
-      } else if (/收入|学生|学员|姓名/i.test(cleanKey)) {
-        incomeName = String(val).trim();
-      } else if (/项目|课程|科目|班型/i.test(cleanKey)) {
-        project = String(val).trim();
-      } else if (/类型|类别|班级/i.test(cleanKey)) {
-        type = String(val).trim();
-      } else if (/金额|费用|款项/i.test(cleanKey)) {
-        amount = parseFloat(val) || 0;
-      } else if (/销售人|销售|顾问/i.test(cleanKey)) {
-        salesperson = String(val).trim();
-      } else if (/老师|教师/i.test(cleanKey)) {
-        teacher = String(val).trim();
-      } else if (/备注|说明/i.test(cleanKey)) {
-        notes = String(val).trim();
-      }
+    // Check headers of first few rows
+    const firstRow = rows[0] || {};
+    const keys = Object.keys(firstRow);
+
+    let score = 0;
+    let hasDate = false;
+    let hasIncome = false;
+    let hasAmount = false;
+    let hasSalesperson = false;
+    let isExplicitDetailSheet = false;
+
+    if (/明细|记录|流水|数据|Detail|Record/i.test(sheetName)) {
+      score += 50;
+      isExplicitDetailSheet = true;
+    }
+    // Penalize pure summary sheets like 销售提成与奖金统计表 / 老师提成合计表 / 项目销量统计表
+    if (/汇总|统计表|合计表|分类/i.test(sheetName) && !/明细|记录/i.test(sheetName)) {
+      score -= 30;
     }
 
-    const { dateStr, monthStr } = parseExcelDate(dateVal);
-    const finalMonth = overrideMonth && overrideMonth.trim() ? overrideMonth.trim() : monthStr;
+    keys.forEach((key) => {
+      const cleanKey = key.trim();
+      if (/日期|时间|Date/i.test(cleanKey)) {
+        hasDate = true;
+        score += 20;
+      }
+      if (/收入|学生|学员|姓名|客户/i.test(cleanKey)) {
+        hasIncome = true;
+        score += 20;
+      }
+      if (/金额|费用|款项|实收/i.test(cleanKey)) {
+        hasAmount = true;
+        score += 15;
+      }
+      if (/销售人|销售|顾问|业绩归属/i.test(cleanKey)) {
+        hasSalesperson = true;
+        score += 15;
+      }
+      if (/项目|课程|科目|班型/i.test(cleanKey)) score += 10;
+      if (/类型|类别|班级/i.test(cleanKey)) score += 10;
+      if (/老师|教师/i.test(cleanKey)) score += 10;
+      if (/月份|Month/i.test(cleanKey)) score += 15;
+    });
 
-    // Standardize record type
-    let cleanType = type;
-    if (type.includes('新')) cleanType = '新';
-    else if (type.includes('续')) cleanType = '续';
-    else if (type.includes('集训')) cleanType = '集训';
-    else cleanType = '新'; // Fallback
+    // Valid if it looks like individual sales records
+    if ((hasIncome && hasAmount) || (hasDate && hasAmount) || (hasSalesperson && hasAmount)) {
+      score += Math.min(rows.length, 100);
+      sheetCandidates.push({
+        name: sheetName,
+        worksheet,
+        score,
+        rows,
+        isExplicitDetailSheet,
+      });
+    }
+  });
 
-    records.push({
-      id: `${batchId}_rec_${index + 1}`,
-      batchId,
-      month: finalMonth,
-      date: dateStr,
-      incomeName: incomeName || '未名学生',
-      project: project || '通用课程',
-      type: cleanType,
-      amount: Math.max(0, amount),
-      salesperson: salesperson || '未名销售',
-      teacher: teacher || '',
-      notes: notes || '',
+  // Determine which sheets to process
+  let sheetsToProcess: SheetCandidate[] = [];
+
+  // 1. If there is a sheet explicitly named with "明细" (e.g. "销售记录提成明细"), prioritize it
+  const explicitDetailSheet = sheetCandidates.find((s) => s.isExplicitDetailSheet);
+  if (explicitDetailSheet && explicitDetailSheet.rows.length > 0) {
+    sheetsToProcess = [explicitDetailSheet];
+  } else if (sheetCandidates.length > 0) {
+    // 2. If multiple monthly sheets exist (e.g. each sheet is a month like "2024-01", "2024-02", "1月", "2月")
+    const looksLikeMonthlySheets =
+      sheetCandidates.length > 1 &&
+      sheetCandidates.every((s) => s.score > 20 && s.rows.length >= 1);
+
+    if (looksLikeMonthlySheets && sheetCandidates.length > 1) {
+      // Process all monthly sheets
+      sheetsToProcess = sheetCandidates;
+    } else {
+      // Pick the sheet with highest score
+      sheetCandidates.sort((a, b) => b.score - a.score);
+      sheetsToProcess = [sheetCandidates[0]];
+    }
+  } else {
+    // Fallback to first sheet
+    const firstSheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[firstSheetName];
+    const rows: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+    sheetsToProcess = [{ name: firstSheetName, worksheet, score: 0, rows, isExplicitDetailSheet: false }];
+  }
+
+  const allRecords: SalesRecord[] = [];
+  let recordCounter = 1;
+
+  sheetsToProcess.forEach((sheet) => {
+    // Try inferring month from sheet name if sheet name contains year/month (e.g. "2024-05", "2024年5月")
+    let sheetInferredMonth = '';
+    const sheetMonthMatch = sheet.name.match(/(\d{4})[年/.-]?\s*(\d{1,2})/);
+    if (sheetMonthMatch) {
+      const y = sheetMonthMatch[1];
+      const m = String(parseInt(sheetMonthMatch[2], 10)).padStart(2, '0');
+      sheetInferredMonth = `${y}-${m}`;
+    }
+
+    sheet.rows.forEach((row) => {
+      let explicitMonth = '';
+      let dateVal: any = '';
+      let incomeName = '';
+      let project = '';
+      let type = '';
+      let amount = 0;
+      let salesperson = '';
+      let teacher = '';
+      let notes = '';
+
+      for (const key of Object.keys(row)) {
+        const cleanKey = key.trim();
+        const val = row[key];
+
+        if (/^月份$|^所属月份$|^Month$/i.test(cleanKey)) {
+          const mStr = String(val).trim();
+          if (/^\d{4}-\d{2}$/.test(mStr)) {
+            explicitMonth = mStr;
+          } else {
+            const parsedM = parseExcelDate(val);
+            if (parsedM && parsedM.monthStr) explicitMonth = parsedM.monthStr;
+          }
+        } else if (/日期|时间|Date/i.test(cleanKey)) {
+          dateVal = val;
+        } else if (/收入|学生|学员|姓名|客户/i.test(cleanKey)) {
+          incomeName = String(val).trim();
+        } else if (/项目|课程|科目|班型/i.test(cleanKey)) {
+          project = String(val).trim();
+        } else if (/类型|类别|班级/i.test(cleanKey)) {
+          type = String(val).trim();
+        } else if (/金额|费用|款项|实收/i.test(cleanKey)) {
+          // Strip currency symbols and commas
+          const cleanedNum = String(val).replace(/[^0-9.-]/g, '');
+          amount = parseFloat(cleanedNum) || 0;
+        } else if (/销售人|销售|顾问|业绩归属/i.test(cleanKey)) {
+          salesperson = String(val).trim();
+        } else if (/老师|教师|任课老师/i.test(cleanKey)) {
+          teacher = String(val).trim();
+        } else if (/备注|说明|Notes/i.test(cleanKey)) {
+          notes = String(val).trim();
+        }
+      }
+
+      // Ignore summary header rows, total rows, or completely empty rows
+      if (
+        !incomeName &&
+        !salesperson &&
+        amount === 0 &&
+        !dateVal
+      ) {
+        return;
+      }
+      if (/合计|总计|汇总/i.test(incomeName) || /合计|总计/i.test(salesperson)) {
+        return;
+      }
+
+      const { dateStr, monthStr } = parseExcelDate(dateVal);
+      const finalMonth =
+        (overrideMonth && overrideMonth.trim()) ||
+        explicitMonth ||
+        (monthStr && !monthStr.startsWith('1970') ? monthStr : '') ||
+        sheetInferredMonth ||
+        new Date().toISOString().substring(0, 7);
+
+      // Standardize record type
+      let cleanType = type;
+      if (type.includes('新')) cleanType = '新';
+      else if (type.includes('续')) cleanType = '续';
+      else if (type.includes('集训')) cleanType = '集训';
+      else cleanType = '新'; // Fallback
+
+      allRecords.push({
+        id: `${batchId}_rec_${recordCounter++}`,
+        batchId,
+        month: finalMonth,
+        date: dateStr,
+        incomeName: incomeName || '未名学生',
+        project: project || '通用课程',
+        type: cleanType,
+        amount: Math.max(0, amount),
+        salesperson: salesperson || '未名销售',
+        teacher: teacher === '(无)' ? '' : teacher || '',
+        notes: notes || '',
+      });
     });
   });
 
-  return records;
+  return allRecords;
 }
 
 /**

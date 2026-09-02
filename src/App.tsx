@@ -237,7 +237,13 @@ export default function App() {
     setData(nextData);
     saveLocalSystemData(nextData);
     saveSystemDataToCloud(nextData);
-    setSelectedMonths([month]);
+
+    const importedMonths = Array.from(new Set(records.map((r) => r.month))).filter(Boolean).sort().reverse();
+    if (importedMonths.length > 0) {
+      setSelectedMonths([importedMonths[0]]);
+    } else {
+      setSelectedMonths([month]);
+    }
   };
 
   // Action: Delete Batch

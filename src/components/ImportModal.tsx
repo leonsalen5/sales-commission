@@ -52,7 +52,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     try {
       const buffer = await selectedFile.arrayBuffer();
       const batchId = `temp_import_${Date.now()}`;
-      // Parse without override to detect month directly from file
+      // Parse without override to detect months directly from file rows and sheets
       const rawRecords = parseExcelFile(buffer, batchId, undefined);
 
       if (rawRecords.length === 0) {
@@ -62,16 +62,20 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         return;
       }
 
-      // Auto detect month from first record or current date
-      const detectedMonth = rawRecords[0]?.month || new Date().toISOString().substring(0, 7);
-      setTargetMonth(detectedMonth);
+      // Check unique months in records
+      const monthsSet = new Set<string>();
+      rawRecords.forEach((r) => {
+        if (r.month) monthsSet.add(r.month);
+      });
+      const uniqueMonths = Array.from(monthsSet).sort();
 
-      // Ensure all records share this detected month
-      const recordsWithMonth = rawRecords.map((r) => ({
-        ...r,
-        month: detectedMonth,
-      }));
-      setParsedRecords(recordsWithMonth);
+      if (uniqueMonths.length === 1) {
+        setTargetMonth(uniqueMonths[0]);
+      } else {
+        setTargetMonth(''); // indicates multi-month mode
+      }
+
+      setParsedRecords(rawRecords);
     } catch (err: any) {
       console.error(err);
       setErrorMsg('Excel文件解析失败，请确保格式正确');
@@ -94,8 +98,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
   const handleMonthChange = (newMonth: string) => {
     setTargetMonth(newMonth);
-    // Update month on preview records
-    if (parsedRecords.length > 0) {
+    // If user explicitly chooses a single month override
+    if (newMonth && parsedRecords.length > 0) {
       setParsedRecords((prev) =>
         prev.map((r) => ({ ...r, month: newMonth }))
       );
@@ -104,15 +108,16 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
   const handleConfirm = async () => {
     if (!file || parsedRecords.length === 0) return;
-    const monthStr = targetMonth.trim() || new Date().toISOString().substring(0, 7);
-
     setIsUploading(true);
     try {
+      // If targetMonth is specified, apply it; otherwise keep each record's own month
       const recordsToImport = parsedRecords.map((r) => ({
         ...r,
-        month: monthStr,
+        month: targetMonth ? targetMonth : (r.month || new Date().toISOString().substring(0, 7)),
       }));
-      await onConfirmImport(monthStr, file.name, recordsToImport);
+
+      const primaryMonth = targetMonth || recordsToImport[0]?.month || new Date().toISOString().substring(0, 7);
+      await onConfirmImport(primaryMonth, file.name, recordsToImport);
       handleClose();
     } catch (err: any) {
       setErrorMsg(err.message || '导入数据提交失败');
@@ -121,6 +126,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   };
 
   const totalAmount = parsedRecords.reduce((s, r) => s + r.amount, 0);
+
+  // Collect distinct months for preview
+  const distinctMonths = Array.from(new Set(parsedRecords.map((r) => r.month))).filter(Boolean).sort();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#4A4A40]/40 backdrop-blur-xs p-4 overflow-y-auto">
@@ -196,15 +204,25 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                 <div className="flex items-center gap-2">
                   <Calendar className="w-4 h-4 text-[#8C8C70]" />
                   <label className="text-xs font-bold text-[#5A5A40]">
-                    归属月份设置 (YYYY-MM):
+                    {distinctMonths.length > 1
+                      ? `检测到多月份数据（共涵盖 ${distinctMonths.length} 个月份）:`
+                      : '归属月份设置 (YYYY-MM):'}
                   </label>
                 </div>
-                <input
-                  type="month"
-                  value={targetMonth}
-                  onChange={(e) => handleMonthChange(e.target.value)}
-                  className="px-3 py-1.5 text-xs bg-white border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] font-bold text-[#4A4A40]"
-                />
+                {distinctMonths.length > 1 ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-emerald-800 bg-emerald-100/80 px-2.5 py-1 rounded-md border border-emerald-200">
+                      {distinctMonths[0]} ~ {distinctMonths[distinctMonths.length - 1]}（保留各记录原月份）
+                    </span>
+                  </div>
+                ) : (
+                  <input
+                    type="month"
+                    value={targetMonth}
+                    onChange={(e) => handleMonthChange(e.target.value)}
+                    className="px-3 py-1.5 text-xs bg-white border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] font-bold text-[#4A4A40]"
+                  />
+                )}
               </div>
 
               {/* Parsed Summary Card */}

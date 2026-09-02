@@ -129,32 +129,57 @@ export function processLocalImport(
 ): SystemData {
   const currentData = getLocalSystemData();
   const batchId = `batch_${Date.now()}`;
-  const targetMonth = month || records[0]?.month || '2026-07';
+  
+  // Collect all distinct months from records
+  const monthsInRecords = Array.from(new Set(records.map((r) => r.month))).filter(Boolean);
+  const isMultiMonth = monthsInRecords.length > 1;
 
   const totalAmount = records.reduce((sum, r) => sum + (r.amount || 0), 0);
 
-  const newBatch: ImportBatch = {
-    id: batchId,
-    month: targetMonth,
-    fileName: fileName || `销售记录_${targetMonth}.xlsx`,
-    uploadedAt: new Date().toISOString(),
-    recordCount: records.length,
-    totalAmount,
-  };
+  const newBatches: ImportBatch[] = [];
+  if (isMultiMonth) {
+    monthsInRecords.forEach((m, idx) => {
+      const recsInMonth = records.filter((r) => r.month === m);
+      newBatches.push({
+        id: `${batchId}_m_${idx + 1}`,
+        month: m,
+        fileName: fileName ? `${fileName} (${m})` : `销售记录_${m}.xlsx`,
+        uploadedAt: new Date().toISOString(),
+        recordCount: recsInMonth.length,
+        totalAmount: recsInMonth.reduce((s, r) => s + (r.amount || 0), 0),
+      });
+    });
+  } else {
+    const targetMonth = month || records[0]?.month || '2026-07';
+    newBatches.push({
+      id: batchId,
+      month: targetMonth,
+      fileName: fileName || `销售记录_${targetMonth}.xlsx`,
+      uploadedAt: new Date().toISOString(),
+      recordCount: records.length,
+      totalAmount,
+    });
+  }
 
-  const formattedRecords: SalesRecord[] = records.map((r, idx) => ({
-    id: `${batchId}_${idx + 1}`,
-    batchId,
-    month: targetMonth,
-    date: r.date || `${targetMonth}/1`,
-    incomeName: r.incomeName || '未名学生',
-    project: r.project || '通用课程',
-    type: r.type || '新',
-    amount: r.amount || 0,
-    salesperson: r.salesperson || '未名销售',
-    teacher: r.teacher || '',
-    notes: r.notes || '',
-  }));
+  const formattedRecords: SalesRecord[] = records.map((r, idx) => {
+    const rMonth = r.month || month || '2026-07';
+    const rBatchId = isMultiMonth
+      ? `${batchId}_m_${Math.max(0, monthsInRecords.indexOf(rMonth)) + 1}`
+      : batchId;
+    return {
+      id: `${batchId}_${idx + 1}`,
+      batchId: rBatchId,
+      month: rMonth,
+      date: r.date || `${rMonth}/1`,
+      incomeName: r.incomeName || '未名学生',
+      project: r.project || '通用课程',
+      type: r.type || '新',
+      amount: r.amount || 0,
+      salesperson: r.salesperson || '未名销售',
+      teacher: r.teacher || '',
+      notes: r.notes || '',
+    };
+  });
 
   // Maintain sales configs
   formattedRecords.forEach((r) => {
@@ -169,7 +194,7 @@ export function processLocalImport(
   });
 
   const updatedData: SystemData = {
-    batches: [newBatch, ...currentData.batches],
+    batches: [...newBatches, ...currentData.batches],
     records: [...formattedRecords, ...currentData.records],
     configs: { ...currentData.configs },
   };
