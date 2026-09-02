@@ -1,0 +1,38 @@
+{
+  "entities": {
+    "SystemState": {
+      "title": "SystemState",
+      "description": "Global state for sales records, import batches, salesperson configurations, and password authentication hash.",
+      "type": "object",
+      "properties": {
+        "batches": {
+          "type": "array",
+          "description": "List of imported sales batches"
+        },
+        "records": {
+          "type": "array",
+          "description": "List of all sales records"
+        },
+        "configs": {
+          "type": "object",
+          "description": "Role and manual other amounts configuration for salespersons"
+        },
+        "passwordHash": {
+          "type": "string",
+          "description": "SHA-256 hashed admin password for data modifications"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp of the last sync/update"
+        }
+      },
+      "required": ["batches", "records", "configs"]
+    }
+  },
+  "firestore": {
+    "/system/{docId}": {
+      "schema": "SystemState",
+      "description": "System state collection storing app_state document for global synchronized data."
+    }
+  }
+}

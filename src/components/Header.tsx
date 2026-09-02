@@ -22,6 +22,7 @@ interface HeaderProps {
   onOpenChangePasswordModal: () => void;
   isManagerAuthenticated?: boolean;
   hasPassword?: boolean;
+  cloudSyncState?: 'synced' | 'syncing' | 'offline';
   batchCount: number;
   recordCount: number;
 }
@@ -36,6 +37,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenChangePasswordModal,
   isManagerAuthenticated = false,
   hasPassword = false,
+  cloudSyncState = 'synced',
   batchCount,
   recordCount,
 }) => {
@@ -53,9 +55,38 @@ export const Header: React.FC<HeaderProps> = ({
                 <h1 className="text-xl font-bold text-[#5A5A40] tracking-tight">
                   培训学校提成与奖金统计系统
                 </h1>
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-[#F5F2EB] text-[#5A5A40] border border-[#E8E6DF]">
-                  <Wifi className="w-3 h-3 text-[#8C8C70] animate-pulse" />
-                  云端多端同步
+                <span
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                    cloudSyncState === 'synced'
+                      ? 'bg-emerald-50/80 text-emerald-800 border-emerald-200'
+                      : cloudSyncState === 'syncing'
+                      ? 'bg-amber-50/80 text-amber-800 border-amber-200'
+                      : 'bg-rose-50 text-rose-700 border-rose-200'
+                  }`}
+                  title={
+                    cloudSyncState === 'synced'
+                      ? 'Firebase 云端数据库已实时连接，所有分享者同步查阅'
+                      : cloudSyncState === 'syncing'
+                      ? '正在同步数据至云端...'
+                      : '当前处于离线模式'
+                  }
+                >
+                  <Wifi
+                    className={`w-3.5 h-3.5 ${
+                      cloudSyncState === 'synced'
+                        ? 'text-emerald-600 animate-pulse'
+                        : cloudSyncState === 'syncing'
+                        ? 'text-amber-600 animate-spin'
+                        : 'text-rose-500'
+                    }`}
+                  />
+                  <span>
+                    {cloudSyncState === 'synced'
+                      ? '云端实时同步中'
+                      : cloudSyncState === 'syncing'
+                      ? '同步中...'
+                      : '离线存储'}
+                  </span>
                 </span>
                 <span
                   className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${
