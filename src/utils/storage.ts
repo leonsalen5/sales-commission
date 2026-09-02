@@ -1,8 +1,14 @@
 import * as XLSX from 'xlsx';
 import { SystemData, ImportBatch, SalesRecord, SalespersonRole, SalespersonConfig } from '../types';
-import { INITIAL_SYSTEM_DATA } from './initialData';
 
 const LOCAL_STORAGE_KEY = 'TRAINING_SCHOOL_COMMISSION_DATA_V1';
+
+export const EMPTY_SYSTEM_DATA: SystemData = {
+  batches: [],
+  records: [],
+  configs: {},
+  viewPasswordEnabled: true,
+};
 
 export function getLocalSystemData(): SystemData {
   try {
@@ -16,9 +22,7 @@ export function getLocalSystemData(): SystemData {
   } catch (err) {
     console.error('Failed to read from localStorage:', err);
   }
-  // Default fallback
-  saveLocalSystemData(INITIAL_SYSTEM_DATA);
-  return INITIAL_SYSTEM_DATA;
+  return EMPTY_SYSTEM_DATA;
 }
 
 export function saveLocalSystemData(data: SystemData) {
@@ -125,11 +129,17 @@ export function generateAndDownloadSampleExcel() {
 export function processLocalImport(
   month: string,
   fileName: string,
-  records: SalesRecord[]
+  records: SalesRecord[],
+  baseDataParam?: SystemData
 ): SystemData {
-  const currentData = getLocalSystemData();
+  const currentData = baseDataParam || getLocalSystemData();
   const batchId = `batch_${Date.now()}`;
   
+  // If the existing data only has the demo sample batch, remove sample batch and records
+  const isOnlySample = currentData.batches.length === 1 && currentData.batches[0].id.startsWith('sample_');
+  const existingBatches = isOnlySample ? [] : currentData.batches;
+  const existingRecords = isOnlySample ? [] : currentData.records;
+
   // Collect all distinct months from records
   const monthsInRecords = Array.from(new Set(records.map((r) => r.month))).filter(Boolean);
   const isMultiMonth = monthsInRecords.length > 1;
@@ -178,6 +188,8 @@ export function processLocalImport(
       salesperson: r.salesperson || '未名销售',
       teacher: r.teacher || '',
       notes: r.notes || '',
+      customSalesCommissionRate: r.customSalesCommissionRate,
+      customTeacherCommissionRate: r.customTeacherCommissionRate,
     };
   });
 
@@ -194,8 +206,9 @@ export function processLocalImport(
   });
 
   const updatedData: SystemData = {
-    batches: [...newBatches, ...currentData.batches],
-    records: [...formattedRecords, ...currentData.records],
+    ...currentData,
+    batches: [...newBatches, ...existingBatches],
+    records: [...formattedRecords, ...existingRecords],
     configs: { ...currentData.configs },
   };
 
@@ -267,10 +280,11 @@ export function processLocalUpdateConfig(
   role?: SalespersonRole,
   month?: string,
   otherAmount?: number,
-  customNewRate?: number | null
+  customNewRate?: number | null,
+  currentData?: SystemData
 ): SystemData {
-  const currentData = getLocalSystemData();
-  const configs = { ...currentData.configs };
+  const baseData = currentData || getLocalSystemData();
+  const configs = { ...baseData.configs };
 
   if (!configs[salesperson]) {
     configs[salesperson] = {
@@ -303,14 +317,14 @@ export function processLocalUpdateConfig(
   }
 
   const updatedData: SystemData = {
-    ...currentData,
+    ...baseData,
     configs,
   };
   saveLocalSystemData(updatedData);
   return updatedData;
 }
 
-// Local Set / Update Password
+// Local Set / Update Admin Password
 export function processLocalSetPassword(
   passwordHash: string,
   currentData?: SystemData
@@ -324,14 +338,46 @@ export function processLocalSetPassword(
   return updatedData;
 }
 
+// Local Set / Update View Password
+export function processLocalSetViewPassword(
+  viewPasswordHash: string,
+  enabled: boolean = true,
+  currentData?: SystemData
+): SystemData {
+  const baseData = currentData || getLocalSystemData();
+  const updatedData: SystemData = {
+    ...baseData,
+    viewPasswordHash,
+    viewPasswordEnabled: enabled,
+  };
+  saveLocalSystemData(updatedData);
+  return updatedData;
+}
+
+// Local Toggle View Password Protection
+export function processLocalToggleViewPassword(
+  enabled: boolean,
+  currentData?: SystemData
+): SystemData {
+  const baseData = currentData || getLocalSystemData();
+  const updatedData: SystemData = {
+    ...baseData,
+    viewPasswordEnabled: enabled,
+  };
+  saveLocalSystemData(updatedData);
+  return updatedData;
+}
+
 // Local Reset Data
-export function processLocalResetData(): SystemData {
-  const current = getLocalSystemData();
+export function processLocalResetData(currentData?: SystemData): SystemData {
+  const baseData = currentData || getLocalSystemData();
   const emptyData: SystemData = {
     batches: [],
     records: [],
     configs: {},
-    passwordHash: current.passwordHash,
+    passwordHash: baseData.passwordHash,
+    viewPasswordHash: baseData.viewPasswordHash,
+    viewPasswordEnabled: baseData.viewPasswordEnabled,
   };
   saveLocalSystemData(emptyData);
   return emptyData;

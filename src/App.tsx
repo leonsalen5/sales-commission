@@ -23,6 +23,8 @@ import {
   processLocalUpdateRecord,
   processLocalDeleteRecord,
   processLocalSetPassword,
+  processLocalSetViewPassword,
+  processLocalToggleViewPassword,
 } from './utils/storage';
 import {
   saveSystemDataToCloud,
@@ -46,8 +48,9 @@ import { SingleRecordModal } from './components/SingleRecordModal';
 import {
   SetInitialPasswordModal,
   VerifyPasswordModal,
-  ChangePasswordModal,
+  SecuritySettingsModal,
 } from './components/AuthModals';
+import { ViewAccessGatekeeper } from './components/ViewAccessGatekeeper';
 import { AlertTriangle } from 'lucide-react';
 
 export default function App() {
@@ -67,11 +70,17 @@ export default function App() {
   // Auth Modals & Persistent Verification State
   const [isSetPasswordModalOpen, setIsSetPasswordModalOpen] = useState<boolean>(false);
   const [isVerifyPasswordModalOpen, setIsVerifyPasswordModalOpen] = useState<boolean>(false);
-  const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState<boolean>(false);
+  const [isSecuritySettingsModalOpen, setIsSecuritySettingsModalOpen] = useState<boolean>(false);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
   const [isManagerAuthenticated, setIsManagerAuthenticated] = useState<boolean>(
     () => localStorage.getItem('auth_manager_authenticated') === 'true'
   );
+  const [isViewAuthenticated, setIsViewAuthenticated] = useState<boolean>(() => {
+    return (
+      localStorage.getItem('auth_view_authenticated') === 'true' ||
+      localStorage.getItem('auth_manager_authenticated') === 'true'
+    );
+  });
 
   // Guard protected sensitive actions
   const runWithAuth = (action: () => void) => {
@@ -96,20 +105,22 @@ export default function App() {
   useEffect(() => {
     testConnection();
 
-    // 1. Initialize local cache immediately
+    // 1. Initialize local cache immediately (if available)
     const localData = getLocalSystemData();
-    setData(localData);
+    if (localData && (localData.records.length > 0 || localData.batches.length > 0 || localData.passwordHash || localData.viewPasswordHash)) {
+      setData(localData);
 
-    const monthsSet = new Set<string>();
-    localData.records.forEach((r) => {
-      if (r.month) monthsSet.add(r.month);
-    });
-    const monthArray = Array.from(monthsSet).sort().reverse();
-    if (monthArray.length > 0) {
-      setSelectedMonths((prev) => (prev.length === 0 ? [monthArray[0]] : prev));
+      const monthsSet = new Set<string>();
+      localData.records.forEach((r) => {
+        if (r.month) monthsSet.add(r.month);
+      });
+      const monthArray = Array.from(monthsSet).sort().reverse();
+      if (monthArray.length > 0) {
+        setSelectedMonths((prev) => (prev.length === 0 ? [monthArray[0]] : prev));
+      }
     }
 
-    // 2. Start Real-time Firebase Cloud Listener
+    // 2. Start Real-time Firebase Cloud Listener (Authoritative Single Source of Truth)
     setCloudSyncState('syncing');
     const unsubscribe = subscribeToCloudSystemData(
       (cloudData) => {
@@ -126,24 +137,28 @@ export default function App() {
           }
           return prev;
         });
+
+        // Mirror to server for offline/download fallback
+        fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: cloudData }),
+        }).catch(() => {});
+      },
+      () => {
+        // Cloud document does not exist yet in fresh project
+        setCloudSyncState('synced');
+        // If current local data has user content, initialize cloud with it
+        const currentLocal = getLocalSystemData();
+        if (currentLocal.records.length > 0 || currentLocal.passwordHash || currentLocal.viewPasswordHash) {
+          saveSystemDataToCloud(currentLocal);
+        }
       },
       (err) => {
         console.warn('Firebase cloud listener offline fallback:', err);
         setCloudSyncState('offline');
       }
     );
-
-    // 3. Fallback check & Initial upload if cloud is uninitialized
-    fetch('/api/data')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((serverData) => {
-        if (serverData && Array.isArray(serverData.records) && serverData.records.length > 0) {
-          setData(serverData);
-          saveLocalSystemData(serverData);
-          saveSystemDataToCloud(serverData);
-        }
-      })
-      .catch(() => {});
 
     return () => {
       unsubscribe();
@@ -209,112 +224,51 @@ export default function App() {
     );
   }, [data.records, data.configs, selectedMonths]);
 
+  // Helper to atomically commit data updates to state, local storage, cloud, and server mirror
+  const commitDataUpdate = async (nextData: SystemData) => {
+    setData(nextData);
+    saveLocalSystemData(nextData);
+    await saveSystemDataToCloud(nextData);
+    fetch('/api/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: nextData }),
+    }).catch(() => {});
+  };
+
   // Action: Confirm Import
   const handleConfirmImport = async (
     month: string,
     fileName: string,
     records: SalesRecord[]
   ) => {
-    let nextData: SystemData;
-    try {
-      const res = await fetch('/api/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ month, fileName, records }),
-      });
-
-      if (res.ok) {
-        const json = await res.json();
-        nextData = json.data;
-      } else {
-        throw new Error('API import failed');
-      }
-    } catch (err) {
-      console.warn('API import fallback to local calculation:', err);
-      nextData = processLocalImport(month, fileName, records);
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-    saveSystemDataToCloud(nextData);
+    const nextData = processLocalImport(month, fileName, records, data);
+    await commitDataUpdate(nextData);
 
     const importedMonths = Array.from(new Set(records.map((r) => r.month))).filter(Boolean).sort().reverse();
     if (importedMonths.length > 0) {
       setSelectedMonths([importedMonths[0]]);
-    } else {
+    } else if (month) {
       setSelectedMonths([month]);
     }
   };
 
   // Action: Delete Batch
   const handleDeleteBatch = async (batchId: string) => {
-    let nextData: SystemData;
-    try {
-      const res = await fetch(`/api/batches/${batchId}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        const json = await res.json();
-        nextData = json.data;
-      } else {
-        throw new Error('API delete failed');
-      }
-    } catch (err) {
-      console.warn('API delete failed, processing locally:', err);
-      nextData = processLocalDeleteBatch(batchId, data);
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-    saveSystemDataToCloud(nextData);
+    const nextData = processLocalDeleteBatch(batchId, data);
+    await commitDataUpdate(nextData);
   };
 
   // Action: Update Single Record
   const handleUpdateRecord = async (updatedRecord: SalesRecord) => {
-    let nextData: SystemData;
-    try {
-      const res = await fetch(`/api/records/${updatedRecord.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedRecord),
-      });
-      if (res.ok) {
-        const json = await res.json();
-        nextData = json.data;
-      } else {
-        throw new Error('API update record failed');
-      }
-    } catch (err) {
-      console.warn('API update record failed, processing locally:', err);
-      nextData = processLocalUpdateRecord(updatedRecord, data);
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-    saveSystemDataToCloud(nextData);
+    const nextData = processLocalUpdateRecord(updatedRecord, data);
+    await commitDataUpdate(nextData);
   };
 
   // Action: Delete Single Record
   const handleDeleteRecord = async (recordId: string) => {
-    let nextData: SystemData;
-    try {
-      const res = await fetch(`/api/records/${recordId}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        const json = await res.json();
-        nextData = json.data;
-      } else {
-        throw new Error('API delete record failed');
-      }
-    } catch (err) {
-      console.warn('API delete record failed, processing locally:', err);
-      nextData = processLocalDeleteRecord(recordId, data);
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-    saveSystemDataToCloud(nextData);
+    const nextData = processLocalDeleteRecord(recordId, data);
+    await commitDataUpdate(nextData);
   };
 
   // Action: Update Salesperson Role & Custom New Rate
@@ -323,33 +277,15 @@ export default function App() {
     role: SalespersonRole,
     customNewRate?: number | null
   ) => {
-    let nextData: SystemData;
-    try {
-      const res = await fetch('/api/salesperson-config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ salesperson, role, customNewRate }),
-      });
-      if (res.ok) {
-        const json = await res.json();
-        nextData = json.data;
-      } else {
-        throw new Error('API update role failed');
-      }
-    } catch (err) {
-      console.warn('API update role failed, processing locally:', err);
-      nextData = processLocalUpdateConfig(
-        salesperson,
-        role,
-        undefined,
-        undefined,
-        customNewRate
-      );
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-    saveSystemDataToCloud(nextData);
+    const nextData = processLocalUpdateConfig(
+      salesperson,
+      role,
+      undefined,
+      undefined,
+      customNewRate,
+      data
+    );
+    await commitDataUpdate(nextData);
   };
 
   // Action: Update Salesperson Other Amount
@@ -358,61 +294,21 @@ export default function App() {
     amount: number
   ) => {
     const monthStr = selectedMonths[0] || '2026-07';
-    let nextData: SystemData;
-    try {
-      const res = await fetch('/api/salesperson-config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          salesperson,
-          month: monthStr,
-          otherAmount: amount,
-        }),
-      });
-      if (res.ok) {
-        const json = await res.json();
-        nextData = json.data;
-      } else {
-        throw new Error('API update amount failed');
-      }
-    } catch (err) {
-      console.warn('API update amount failed, processing locally:', err);
-      nextData = processLocalUpdateConfig(
-        salesperson,
-        undefined,
-        monthStr,
-        amount
-      );
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-    saveSystemDataToCloud(nextData);
+    const nextData = processLocalUpdateConfig(
+      salesperson,
+      undefined,
+      monthStr,
+      amount,
+      undefined,
+      data
+    );
+    await commitDataUpdate(nextData);
   };
 
   // Auth Handlers
   const handleSetPassword = async (pwdHash: string) => {
-    let nextData: SystemData;
-    try {
-      const res = await fetch('/api/auth/password', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ passwordHash: pwdHash }),
-      });
-      if (res.ok) {
-        const json = await res.json();
-        nextData = json.data;
-      } else {
-        throw new Error('API password set failed');
-      }
-    } catch (err) {
-      console.warn('Set password API failed, saving locally:', err);
-      nextData = processLocalSetPassword(pwdHash, data);
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-    saveSystemDataToCloud(nextData);
+    const nextData = processLocalSetPassword(pwdHash, data);
+    await commitDataUpdate(nextData);
 
     localStorage.setItem('auth_manager_authenticated', 'true');
     setIsManagerAuthenticated(true);
@@ -434,30 +330,21 @@ export default function App() {
   };
 
   const handleChangePassword = async (newPwdHash: string) => {
-    let nextData: SystemData;
-    try {
-      const res = await fetch('/api/auth/password', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ passwordHash: newPwdHash }),
-      });
-      if (res.ok) {
-        const json = await res.json();
-        nextData = json.data;
-      } else {
-        throw new Error('API change password failed');
-      }
-    } catch (err) {
-      console.warn('Change password API failed, saving locally:', err);
-      nextData = processLocalSetPassword(newPwdHash, data);
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-    saveSystemDataToCloud(nextData);
+    const nextData = processLocalSetPassword(newPwdHash, data);
+    await commitDataUpdate(nextData);
 
     localStorage.setItem('auth_manager_authenticated', 'true');
     setIsManagerAuthenticated(true);
+  };
+
+  const handleChangeViewPassword = async (newViewPasswordHash: string, enabled: boolean) => {
+    const nextData = processLocalSetViewPassword(newViewPasswordHash, enabled, data);
+    await commitDataUpdate(nextData);
+  };
+
+  const handleToggleViewPassword = async (enabled: boolean) => {
+    const nextData = processLocalToggleViewPassword(enabled, data);
+    await commitDataUpdate(nextData);
   };
 
   // Action: Download Sample Template
@@ -493,23 +380,8 @@ export default function App() {
 
   // Action: Reset Data
   const handleResetData = async () => {
-    let nextData: SystemData;
-    try {
-      const res = await fetch('/api/reset', { method: 'POST' });
-      if (res.ok) {
-        const json = await res.json();
-        nextData = json.data;
-      } else {
-        throw new Error('API reset failed');
-      }
-    } catch (err) {
-      console.warn('API reset failed, resetting locally:', err);
-      nextData = processLocalResetData();
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-    saveSystemDataToCloud(nextData);
+    const nextData = processLocalResetData(data);
+    await commitDataUpdate(nextData);
     setSelectedMonths([]);
     setIsResetConfirmOpen(false);
   };
@@ -534,6 +406,26 @@ export default function App() {
     return Array.from(set).sort();
   }, [data.records]);
 
+  // View Access Gatekeeper: If device is not yet authenticated for browsing or management
+  if (!isViewAuthenticated && !isManagerAuthenticated) {
+    return (
+      <ViewAccessGatekeeper
+        currentViewPasswordHash={data.viewPasswordHash}
+        currentManagerPasswordHash={data.passwordHash}
+        onViewSuccess={() => {
+          localStorage.setItem('auth_view_authenticated', 'true');
+          setIsViewAuthenticated(true);
+        }}
+        onManagerSuccess={() => {
+          localStorage.setItem('auth_view_authenticated', 'true');
+          localStorage.setItem('auth_manager_authenticated', 'true');
+          setIsViewAuthenticated(true);
+          setIsManagerAuthenticated(true);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased flex flex-col">
       {/* App Header */}
@@ -549,9 +441,11 @@ export default function App() {
         onDownloadSample={() => runWithAuth(handleDownloadSample)}
         onExportExcel={() => runWithAuth(handleExportExcel)}
         onResetData={() => runWithAuth(() => setIsResetConfirmOpen(true))}
-        onOpenChangePasswordModal={() => setIsChangePasswordModalOpen(true)}
+        onOpenChangePasswordModal={() => setIsSecuritySettingsModalOpen(true)}
         isManagerAuthenticated={isManagerAuthenticated}
+        isViewAuthenticated={isViewAuthenticated}
         hasPassword={!!data.passwordHash}
+        hasViewPassword={!!data.viewPasswordHash}
         cloudSyncState={cloudSyncState}
         batchCount={data.batches.length}
         recordCount={filteredRecords.length}
@@ -676,13 +570,18 @@ export default function App() {
         }}
         currentPasswordHash={data.passwordHash || ''}
         onSuccess={handleVerifySuccess}
-        onOpenChangePassword={() => setIsChangePasswordModalOpen(true)}
+        onOpenChangePassword={() => setIsSecuritySettingsModalOpen(true)}
       />
 
-      <ChangePasswordModal
-        isOpen={isChangePasswordModalOpen}
-        onClose={() => setIsChangePasswordModalOpen(false)}
-        onChangePassword={handleChangePassword}
+      <SecuritySettingsModal
+        isOpen={isSecuritySettingsModalOpen}
+        onClose={() => setIsSecuritySettingsModalOpen(false)}
+        onChangeAdminPassword={handleChangePassword}
+        onChangeViewPassword={handleChangeViewPassword}
+        onToggleViewPassword={handleToggleViewPassword}
+        isViewPasswordEnabled={data.viewPasswordEnabled ?? true}
+        hasCustomViewPassword={!!data.viewPasswordHash}
+        hasAdminPassword={!!data.passwordHash}
       />
 
       {/* System Reset Modal */}

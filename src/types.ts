@@ -93,5 +93,7 @@ export interface SystemData {
   batches: ImportBatch[];
   records: SalesRecord[];
   configs: Record<string, SalespersonConfig>;
-  passwordHash?: string;
+  passwordHash?: string; // 管理员操作密码（管理权限）
+  viewPasswordHash?: string; // 全站浏览访问密码（访客查阅权限）
+  viewPasswordEnabled?: boolean; // 是否开启全站浏览密码保护
 }

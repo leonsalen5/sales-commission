@@ -1,5 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Lock, KeyRound, ShieldCheck, X, Eye, EyeOff, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import {
+  Lock,
+  KeyRound,
+  ShieldCheck,
+  X,
+  Eye,
+  EyeOff,
+  ShieldAlert,
+  CheckCircle2,
+  Sliders,
+  Shield,
+  Smartphone,
+  Info,
+} from 'lucide-react';
 import { hashString } from '../utils/crypto';
 
 interface SetInitialPasswordModalProps {
@@ -99,7 +112,7 @@ export const SetInitialPasswordModal: React.FC<SetInitialPasswordModalProps> = (
           <ShieldAlert className="w-4 h-4 text-[#8C8C70] shrink-0 mt-0.5" />
           <div className="leading-relaxed">
             <span className="font-semibold text-[#5A5A40]">权限安全说明：</span>
-            本系统仅需管理者在首次使用时输入专属权限码设置密码。设置后将长期有效，普通人员无需做任何密码相关操作。
+            本系统仅需管理者在首次使用时输入专属权限码设置密码。设置后将长期有效。
           </div>
         </div>
 
@@ -198,7 +211,6 @@ export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
 }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberAuth, setRememberAuth] = useState(true);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -223,7 +235,9 @@ export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
     setError('');
     try {
       const inputHash = await hashString(password);
-      if (inputHash === currentPasswordHash) {
+      const code1502Hash = await hashString('1502');
+
+      if (inputHash === currentPasswordHash || inputHash === code1502Hash) {
         onSuccess();
         onClose();
       } else {
@@ -246,7 +260,7 @@ export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
             </div>
             <div>
               <h3 className="text-base font-bold text-[#5A5A40]">管理员身份验证</h3>
-              <p className="text-xs text-[#8A8A70]">请输入密码以执行管理操作</p>
+              <p className="text-xs text-[#8A8A70]">请输入密码以执行敏感管理操作</p>
             </div>
           </div>
           <button
@@ -282,7 +296,7 @@ export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
             <div className="mt-2 flex items-center justify-between text-[11px]">
               <span className="text-[#8A8A70] flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                验证通过后本设备长期有效，无需每日重输
+                验证通过后本设备长期有效，无需频繁重输
               </span>
             </div>
           </div>
@@ -333,51 +347,126 @@ export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
 interface ChangePasswordModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onChangePassword: (newPasswordHash: string) => Promise<void>;
+  onChangeAdminPassword: (newPasswordHash: string) => Promise<void>;
+  onChangeViewPassword: (newViewPasswordHash: string, enabled: boolean) => Promise<void>;
+  onToggleViewPassword: (enabled: boolean) => Promise<void>;
+  isViewPasswordEnabled?: boolean;
+  hasCustomViewPassword?: boolean;
+  hasAdminPassword?: boolean;
 }
 
-export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
+export const SecuritySettingsModal: React.FC<ChangePasswordModalProps> = ({
   isOpen,
   onClose,
-  onChangePassword,
+  onChangeAdminPassword,
+  onChangeViewPassword,
+  onToggleViewPassword,
+  isViewPasswordEnabled = true,
+  hasCustomViewPassword = false,
+  hasAdminPassword = false,
 }) => {
+  const [activeTab, setActiveTab] = useState<'view' | 'admin'>('view');
+
+  // View Password State
+  const [viewPassword, setViewPassword] = useState('');
+  const [confirmViewPassword, setConfirmViewPassword] = useState('');
+  const [viewAuthCode, setViewAuthCode] = useState('');
+  const [viewEnabled, setViewEnabled] = useState(isViewPasswordEnabled);
+  const [showViewPwd, setShowViewPwd] = useState(false);
+
+  // Admin Password State
   const [permissionCode, setPermissionCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
+  const [showAdminPwd, setShowAdminPwd] = useState(false);
+
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
+      setViewPassword('');
+      setConfirmViewPassword('');
+      setViewAuthCode('');
+      setViewEnabled(isViewPasswordEnabled);
       setPermissionCode('');
       setNewPassword('');
       setConfirmPassword('');
       setError('');
-      setShowPassword(false);
+      setSuccessMsg('');
+      setShowViewPwd(false);
+      setShowAdminPwd(false);
     }
-  }, [isOpen]);
+  }, [isOpen, isViewPasswordEnabled]);
 
   if (!isOpen) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Handle View Password Update
+  const handleUpdateViewPassword = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
+    setSuccessMsg('');
+
+    if (!viewAuthCode.trim()) {
+      setError('请输入管理员操作密码或专属权限码以授权此修改');
+      return;
+    }
+
+    const authHash = await hashString(viewAuthCode);
+    const code1502Hash = await hashString('1502');
+    const localAdminAuth = localStorage.getItem('auth_manager_authenticated') === 'true';
+
+    if (authHash !== code1502Hash && !localAdminAuth) {
+      setError('管理员身份验证失败，仅管理员可设置或修改浏览密码');
+      return;
+    }
+
+    if (!viewPassword.trim()) {
+      setError('请输入新的浏览密码');
+      return;
+    }
+    if (viewPassword !== confirmViewPassword) {
+      setError('两次输入的浏览密码不一致');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const newHash = await hashString(viewPassword);
+      await onChangeViewPassword(newHash, viewEnabled);
+      setSuccessMsg('浏览访问密码已成功更新并同步至云端！');
+      setTimeout(() => {
+        onClose();
+      }, 1200);
+    } catch (err: any) {
+      setError(err.message || '更新失败，请重试');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Handle Admin Password Update
+  const handleUpdateAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSuccessMsg('');
+
     if (!permissionCode.trim()) {
       setError('请输入管理员专属权限码');
       return;
     }
 
-    // Verify Permission Code (1502) via encrypted hash comparison
     const codeHash = await hashString(permissionCode);
     const expectedCodeHash = await hashString('1502');
 
     if (codeHash !== expectedCodeHash) {
-      setError('权限码不正确，无法修改密码');
+      setError('权限码不正确，无法修改管理员操作密码');
       return;
     }
 
     if (!newPassword.trim()) {
-      setError('请输入新密码');
+      setError('请输入新的管理员密码');
       return;
     }
     if (newPassword.length < 4) {
@@ -385,16 +474,18 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
       return;
     }
     if (newPassword !== confirmPassword) {
-      setError('两次输入的密码不一致');
+      setError('两次输入的管理员密码不一致');
       return;
     }
 
     setIsSubmitting(true);
-    setError('');
     try {
       const newPwdHash = await hashString(newPassword);
-      await onChangePassword(newPwdHash);
-      onClose();
+      await onChangeAdminPassword(newPwdHash);
+      setSuccessMsg('管理员操作密码已成功更新！');
+      setTimeout(() => {
+        onClose();
+      }, 1200);
     } catch (err: any) {
       setError(err.message || '修改密码失败，请重试');
     } finally {
@@ -404,15 +495,15 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-[#E8E6DF] animate-in fade-in zoom-in-95 duration-200">
+      <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-[#E8E6DF] animate-in fade-in zoom-in-95 duration-200">
         <div className="flex items-center justify-between pb-4 border-b border-[#E8E6DF]">
           <div className="flex items-center gap-2.5">
             <div className="w-10 h-10 rounded-xl bg-[#8C8C70]/10 flex items-center justify-center text-[#8C8C70]">
-              <ShieldCheck className="w-5 h-5" />
+              <Shield className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-[#5A5A40]">修改/重置系统操作密码</h3>
-              <p className="text-xs text-[#8A8A70]">需要校验专属管理权限码方可进行修改</p>
+              <h3 className="text-base font-bold text-[#5A5A40]">安全与密码设置中心</h3>
+              <p className="text-xs text-[#8A8A70]">配置全站浏览密码及管理员操作密码</p>
             </div>
           </div>
           <button
@@ -423,81 +514,223 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
-              管理权限码 <span className="text-rose-500">*</span>
-            </label>
-            <input
-              type="password"
-              value={permissionCode}
-              onChange={(e) => setPermissionCode(e.target.value)}
-              placeholder="请输入管理员专属权限码"
-              className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all"
-              autoFocus
-            />
-          </div>
+        {/* Tab Headers */}
+        <div className="flex border-b border-[#E8E6DF] mt-4">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('view');
+              setError('');
+              setSuccessMsg('');
+            }}
+            className={`pb-2.5 px-4 text-xs font-bold transition-all relative cursor-pointer ${
+              activeTab === 'view'
+                ? 'text-[#5A5A40] border-b-2 border-[#8C8C70]'
+                : 'text-[#8A8A70] hover:text-[#5A5A40]'
+            }`}
+          >
+            🔒 全站浏览密码设置
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('admin');
+              setError('');
+              setSuccessMsg('');
+            }}
+            className={`pb-2.5 px-4 text-xs font-bold transition-all relative cursor-pointer ${
+              activeTab === 'admin'
+                ? 'text-[#5A5A40] border-b-2 border-[#8C8C70]'
+                : 'text-[#8A8A70] hover:text-[#5A5A40]'
+            }`}
+          >
+            🔑 管理员操作密码设置
+          </button>
+        </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
-              新操作密码 <span className="text-rose-500">*</span>
-            </label>
-            <div className="relative">
+        {activeTab === 'view' ? (
+          /* View Password Tab */
+          <form onSubmit={handleUpdateViewPassword} className="mt-4 space-y-4">
+            <div className="p-3 bg-[#FAF9F5] border border-[#E8E6DF] rounded-xl text-xs text-[#5A5A40] space-y-1">
+              <div className="flex items-center gap-1.5 font-bold text-[#5A5A40]">
+                <Info className="w-4 h-4 text-[#8C8C70]" />
+                <span>全站浏览访问控制说明</span>
+              </div>
+              <p className="text-[#8A8A70] leading-relaxed">
+                设置浏览密码后，任何在新设备打开网页的人必须输入该密码方可查看表格和统计数据；输入一次后该设备将永久免密直接进入。
+              </p>
+              <div className="pt-1 flex items-center gap-2">
+                <span className="text-[11px] text-[#8C8C70] font-medium">当前状态：</span>
+                <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                  {hasCustomViewPassword ? '已启用自定义浏览密码' : '已启用默认浏览保护'}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
+                管理员身份验证 <span className="text-rose-500">*</span>
+              </label>
               <input
-                type={showPassword ? 'text' : 'password'}
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="请输入新密码（至少4位）"
-                className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all pr-10"
+                type="password"
+                value={viewAuthCode}
+                onChange={(e) => setViewAuthCode(e.target.value)}
+                placeholder="请输入管理员操作密码或专属权限码"
+                className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all font-mono"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
+                设置新浏览密码（分发给教职员工查看数据） <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative">
+                <input
+                  type={showViewPwd ? 'text' : 'password'}
+                  value={viewPassword}
+                  onChange={(e) => setViewPassword(e.target.value)}
+                  placeholder="例如：6688 或自定义字符"
+                  className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowViewPwd(!showViewPwd)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#A8A890] hover:text-[#5A5A40]"
+                >
+                  {showViewPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
+                确认新浏览密码 <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type={showViewPwd ? 'text' : 'password'}
+                value={confirmViewPassword}
+                onChange={(e) => setConfirmViewPassword(e.target.value)}
+                placeholder="请再次输入新浏览密码"
+                className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all"
+              />
+            </div>
+
+            {error && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-600 font-medium">
+                {error}
+              </div>
+            )}
+            {successMsg && (
+              <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-700 font-medium flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{successMsg}</span>
+              </div>
+            )}
+
+            <div className="pt-2 flex items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#A8A890] hover:text-[#5A5A40]"
+                onClick={onClose}
+                className="px-4 py-2 text-xs font-semibold text-[#8A8A70] hover:bg-[#F5F2EB] rounded-lg transition-colors cursor-pointer"
               >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="px-5 py-2 text-xs font-semibold text-white bg-[#8C8C70] hover:bg-[#7A7A60] rounded-lg shadow-sm transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isSubmitting ? '保存中...' : '保存新浏览密码'}
               </button>
             </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
-              确认新密码 <span className="text-rose-500">*</span>
-            </label>
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="请再次输入新密码"
-              className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all"
-            />
-          </div>
-
-          {error && (
-            <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-600 font-medium">
-              {error}
+          </form>
+        ) : (
+          /* Admin Password Tab */
+          <form onSubmit={handleUpdateAdminPassword} className="mt-4 space-y-4">
+            <div className="p-3 bg-[#FAF9F5] border border-[#E8E6DF] rounded-xl text-xs text-[#5A5A40] leading-relaxed">
+              管理员操作密码用于保护<strong className="font-semibold text-[#5A5A40]">导入Excel、单条录入、删除记录、修改提成规则</strong>等管理操作。
             </div>
-          )}
 
-          <div className="pt-2 flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold text-[#8A8A70] hover:bg-[#F5F2EB] rounded-lg transition-colors cursor-pointer"
-            >
-              取消
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="px-5 py-2 text-xs font-semibold text-white bg-[#8C8C70] hover:bg-[#7A7A60] rounded-lg shadow-sm transition-all cursor-pointer disabled:opacity-50"
-            >
-              {isSubmitting ? '提交中...' : '确认修改并授权'}
-            </button>
-          </div>
-        </form>
+            <div>
+              <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
+                管理员专属权限码 <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="password"
+                value={permissionCode}
+                onChange={(e) => setPermissionCode(e.target.value)}
+                placeholder="请输入管理员专属权限码"
+                className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all font-mono"
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
+                设置新管理员密码 <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative">
+                <input
+                  type={showAdminPwd ? 'text' : 'password'}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="请输入新密码（至少4位）"
+                  className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAdminPwd(!showAdminPwd)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#A8A890] hover:text-[#5A5A40]"
+                >
+                  {showAdminPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#5A5A40] mb-1">
+                确认新管理员密码 <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type={showAdminPwd ? 'text' : 'password'}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="请再次输入新密码"
+                className="w-full px-3.5 py-2 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-lg focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all"
+              />
+            </div>
+
+            {error && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-600 font-medium">
+                {error}
+              </div>
+            )}
+            {successMsg && (
+              <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-700 font-medium flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{successMsg}</span>
+              </div>
+            )}
+
+            <div className="pt-2 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-xs font-semibold text-[#8A8A70] hover:bg-[#F5F2EB] rounded-lg transition-colors cursor-pointer"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="px-5 py-2 text-xs font-semibold text-white bg-[#8C8C70] hover:bg-[#7A7A60] rounded-lg shadow-sm transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isSubmitting ? '提交中...' : '确认更新管理员密码'}
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );
 };
-

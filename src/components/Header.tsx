@@ -20,8 +20,11 @@ interface HeaderProps {
   onExportExcel: () => void;
   onResetData: () => void;
   onOpenChangePasswordModal: () => void;
+  onLockView?: () => void;
   isManagerAuthenticated?: boolean;
+  isViewAuthenticated?: boolean;
   hasPassword?: boolean;
+  hasViewPassword?: boolean;
   cloudSyncState?: 'synced' | 'syncing' | 'offline';
   batchCount: number;
   recordCount: number;
@@ -35,8 +38,11 @@ export const Header: React.FC<HeaderProps> = ({
   onExportExcel,
   onResetData,
   onOpenChangePasswordModal,
+  onLockView,
   isManagerAuthenticated = false,
+  isViewAuthenticated = true,
   hasPassword = false,
+  hasViewPassword = false,
   cloudSyncState = 'synced',
   batchCount,
   recordCount,
@@ -92,29 +98,32 @@ export const Header: React.FC<HeaderProps> = ({
                   className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${
                     isManagerAuthenticated
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      : hasPassword
-                      ? 'bg-amber-50 text-amber-700 border-amber-200'
-                      : 'bg-[#F5F2EB] text-[#8C8C70] border-[#E8E6DF]'
+                      : 'bg-[#F5F2EB] text-[#5A5A40] border-[#E8E6DF]'
                   }`}
                   title={
                     isManagerAuthenticated
-                      ? '当前设备已获得管理权限，操作无需重复输入密码'
-                      : hasPassword
-                      ? '敏感管理操作需输入管理员密码'
-                      : '系统未设置密码，首次操作需管理者输入权限码'
+                      ? '当前设备已获得管理全权（导入、编辑、删除免密码）'
+                      : '普通浏览模式，管理操作需管理员密码或权限码'
                   }
                 >
                   {isManagerAuthenticated ? (
                     <>
                       <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                      已授权管理
+                      管理员已授权
                     </>
                   ) : (
                     <>
-                      <Lock className="w-3 h-3 text-amber-600" />
-                      {hasPassword ? '密码保护中' : '需权限码初始化'}
+                      <Lock className="w-3 h-3 text-[#8C8C70]" />
+                      受限浏览中
                     </>
                   )}
+                </span>
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border bg-emerald-50/80 text-emerald-800 border-emerald-200"
+                  title="全站浏览密码保护已生效，新设备必须输入密码方可查看"
+                >
+                  <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                  浏览密码已保护
                 </span>
               </div>
               <p className="text-xs text-[#8A8A70] mt-0.5">
@@ -180,10 +189,10 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               onClick={onOpenChangePasswordModal}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded-lg transition-colors border border-[#E8E6DF] cursor-pointer"
-              title="凭借专属权限码设置或修改密码"
+              title="设置或修改全站浏览密码、管理员操作密码"
             >
               <ShieldCheck className="w-3.5 h-3.5 text-[#8C8C70]" />
-              {hasPassword ? '修改密码' : '设置密码'}
+              安全与密码设置
             </button>
 
             <button

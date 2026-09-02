@@ -18,6 +18,8 @@ export async function saveSystemDataToCloud(data: SystemData): Promise<boolean> 
       records: data.records || [],
       configs: data.configs || {},
       passwordHash: data.passwordHash || '',
+      viewPasswordHash: data.viewPasswordHash || '',
+      viewPasswordEnabled: data.viewPasswordEnabled !== undefined ? data.viewPasswordEnabled : true,
     };
 
     await setDoc(docRef, {
@@ -64,6 +66,7 @@ export async function fetchSystemDataFromCloud(): Promise<SystemData | null> {
  */
 export function subscribeToCloudSystemData(
   onUpdate: (data: SystemData) => void,
+  onNotFound?: () => void,
   onError?: (error: Error) => void
 ): Unsubscribe {
   const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
@@ -78,6 +81,8 @@ export function subscribeToCloudSystemData(
           saveLocalSystemData(cloudData);
           onUpdate(cloudData);
         }
+      } else {
+        if (onNotFound) onNotFound();
       }
     },
     (error) => {

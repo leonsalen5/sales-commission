@@ -48,202 +48,21 @@ function saveSystemData(data: SystemData) {
   }
 }
 
-// Ensure initial sample data if DB is completely empty on first load
-function initDefaultSampleDataIfEmpty() {
-  const data = getSystemData();
-  if (data.batches.length === 0) {
-    const batchId = 'sample_batch_2026_07';
-    const sampleBatch: ImportBatch = {
-      id: batchId,
-      month: '2026-07',
-      fileName: '2026年7月销售记录示例.xlsx',
-      uploadedAt: new Date().toISOString(),
-      recordCount: 12,
-      totalAmount: 168000,
-    };
-
-    const sampleRecords: SalesRecord[] = [
-      {
-        id: `${batchId}_1`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/1',
-        incomeName: '张小明',
-        project: '少儿美术',
-        type: '新',
-        amount: 3800,
-        salesperson: '王顾问',
-        teacher: '李老师',
-        notes: '标准年卡课程',
-      },
-      {
-        id: `${batchId}_2`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/2',
-        incomeName: '李思思',
-        project: '硬笔书法',
-        type: '新',
-        amount: 4500,
-        salesperson: '王顾问',
-        teacher: '陈老师',
-        notes: '暑期班+硬笔套装',
-      },
-      {
-        id: `${batchId}_3`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/3',
-        incomeName: '赵雷',
-        project: '少儿英语',
-        type: '续',
-        amount: 8000,
-        salesperson: '王顾问',
-        teacher: '张老师',
-        notes: '续费两年套餐',
-      },
-      {
-        id: `${batchId}_4`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/5',
-        incomeName: '孙悟空',
-        project: '夏令营集训',
-        type: '集训',
-        amount: 6800,
-        salesperson: '王顾问',
-        teacher: '李老师',
-        notes: '7天闭环特训',
-      },
-      {
-        id: `${batchId}_5`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/6',
-        incomeName: '钱七',
-        project: '少儿美术',
-        type: '新',
-        amount: 12000,
-        salesperson: '王顾问',
-        teacher: '李老师',
-        notes: '三年VIP班',
-      },
-      {
-        id: `${batchId}_6`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/8',
-        incomeName: '周八',
-        project: '少儿英语',
-        type: '新',
-        amount: 15000,
-        salesperson: '王顾问',
-        teacher: '张老师',
-        notes: '新报高端班',
-      },
-      {
-        id: `${batchId}_7`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/10',
-        incomeName: '吴九',
-        project: '硬笔书法',
-        type: '续',
-        amount: 45000,
-        salesperson: '王顾问',
-        teacher: '陈老师',
-        notes: '老学员高额续费',
-      },
-      {
-        id: `${batchId}_8`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/12',
-        incomeName: '郑十',
-        project: '少儿美术',
-        type: '续',
-        amount: 10000,
-        salesperson: '王顾问',
-        teacher: '',
-        notes: '无指定老师续费',
-      },
-      {
-        id: `${batchId}_9`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/15',
-        incomeName: '林一',
-        project: '少儿英语',
-        type: '新',
-        amount: 22000,
-        salesperson: '张顾问',
-        teacher: '张老师',
-        notes: '非自主招生顾问转转入',
-      },
-      {
-        id: `${batchId}_10`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/18',
-        incomeName: '徐二',
-        project: '夏令营集训',
-        type: '集训',
-        amount: 5000,
-        salesperson: '张顾问',
-        teacher: '陈老师',
-        notes: '集训班学员',
-      },
-      {
-        id: `${batchId}_11`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/20',
-        incomeName: '胡三',
-        project: '少儿美术',
-        type: '续',
-        amount: 16000,
-        salesperson: '张顾问',
-        teacher: '李老师',
-        notes: '续费大单',
-      },
-      {
-        id: `${batchId}_12`,
-        batchId,
-        month: '2026-07',
-        date: '2026/7/25',
-        incomeName: '高四',
-        project: '硬笔书法',
-        type: '新',
-        amount: 20000,
-        salesperson: '张顾问',
-        teacher: '陈老师',
-        notes: '新报名书法全能班',
-      },
-    ];
-
-    const sampleConfigs: Record<string, SalespersonConfig> = {
-      王顾问: {
-        salesperson: '王顾问',
-        role: '普通课程顾问',
-        otherAmountByMonth: { '2026-07': 500 },
-      },
-      张顾问: {
-        salesperson: '张顾问',
-        role: '非自主招生课程顾问',
-        otherAmountByMonth: { '2026-07': 0 },
-      },
-    };
-
-    data.batches.push(sampleBatch);
-    data.records.push(...sampleRecords);
-    data.configs = sampleConfigs;
-    saveSystemData(data);
-  }
-}
-
-initDefaultSampleDataIfEmpty();
-
 // --- API ROUTES ---
+
+// Sync full system state from authoritative client/cloud
+app.post('/api/sync', (req, res) => {
+  try {
+    const { data } = req.body;
+    if (data && Array.isArray(data.batches) && Array.isArray(data.records)) {
+      saveSystemData(data);
+      return res.json({ success: true, data });
+    }
+    return res.status(400).json({ error: '无效的数据格式' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || '同步数据失败' });
+  }
+});
 
 // Get all system data
 app.get('/api/data', (req, res) => {
@@ -448,7 +267,7 @@ app.put('/api/salesperson-config', (req, res) => {
   }
 });
 
-// Update / Set System Password
+// Update / Set Admin Password
 app.put('/api/auth/password', (req, res) => {
   try {
     const { passwordHash } = req.body;
@@ -464,6 +283,23 @@ app.put('/api/auth/password', (req, res) => {
   }
 });
 
+// Update / Set View Password
+app.put('/api/auth/view-password', (req, res) => {
+  try {
+    const { viewPasswordHash, enabled } = req.body;
+    if (!viewPasswordHash) {
+      return res.status(400).json({ error: '浏览密码哈希不能为空' });
+    }
+    const data = getSystemData();
+    data.viewPasswordHash = viewPasswordHash;
+    data.viewPasswordEnabled = enabled !== undefined ? enabled : true;
+    saveSystemData(data);
+    res.json({ success: true, viewPasswordHash, enabled: data.viewPasswordEnabled, data });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || '设置浏览密码失败' });
+  }
+});
+
 // Reset / Clear All Data
 app.post('/api/reset', (req, res) => {
   try {
@@ -473,6 +309,8 @@ app.post('/api/reset', (req, res) => {
       records: [],
       configs: {},
       passwordHash: current.passwordHash,
+      viewPasswordHash: current.viewPasswordHash,
+      viewPasswordEnabled: current.viewPasswordEnabled,
     };
     saveSystemData(emptyData);
     res.json({ success: true, data: emptyData });
