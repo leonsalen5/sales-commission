@@ -34,6 +34,29 @@ if (fs.existsSync(firebaseConfigPath)) {
   }
 }
 
+// Helper for precise timestamps accurate to seconds
+function formatTimestampToSeconds(d?: Date | number | string): string {
+  const date = d ? new Date(d) : new Date();
+  if (isNaN(date.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  const seconds = pad(date.getSeconds());
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function getNowPrecise() {
+  const now = new Date();
+  return {
+    formatted: formatTimestampToSeconds(now),
+    timestamp: Math.floor(now.getTime() / 1000),
+    iso: now.toISOString(),
+  };
+}
+
 // Local disk cache fallback
 function getLocalDiskData(): SystemData {
   try {
@@ -41,6 +64,7 @@ function getLocalDiskData(): SystemData {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     if (!fs.existsSync(DB_FILE)) {
+      const now = getNowPrecise();
       const initial: SystemData = {
         batches: [],
         records: [],
@@ -48,12 +72,25 @@ function getLocalDiskData(): SystemData {
         passwordHash: '615ed7fb1504b0c724a296d7a69e6c7b2f9ea2c57c1d8206c5afdf392ebdfd25',
         viewPasswordHash: '9800a8677d99e5f6968d7357e44006388b09d3b6a8676d0f930fbaa63d02330d',
         viewPasswordEnabled: true,
+        lastImportTime: '',
+        lastImportTimestamp: 0,
+        updatedAt: now.iso,
       };
       fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
       return initial;
     }
     const content = fs.readFileSync(DB_FILE, 'utf-8');
-    return JSON.parse(content) as SystemData;
+    const parsed = JSON.parse(content) as SystemData;
+
+    // Ensure lastImportTime and lastImportTimestamp are populated accurately to seconds
+    if (!parsed.lastImportTime && parsed.batches && parsed.batches.length > 0) {
+      const sortedBatches = [...parsed.batches].sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+      const latestBatch = sortedBatches[0];
+      parsed.lastImportTime = formatTimestampToSeconds(latestBatch.uploadedAt);
+      parsed.lastImportTimestamp = Math.floor(new Date(latestBatch.uploadedAt).getTime() / 1000);
+    }
+
+    return parsed;
   } catch (err) {
     console.error('Error reading system data from disk:', err);
     return { batches: [], records: [], configs: {}, viewPasswordEnabled: true };
@@ -93,6 +130,11 @@ async function getSystemDataAsync(): Promise<SystemData> {
         const cloudData = snap.data() as SystemData;
         if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
           if (cloudData.records.length > 0 || cloudData.batches.length > 0) {
+            if (!cloudData.lastImportTime && cloudData.batches.length > 0) {
+              const latest = [...cloudData.batches].sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())[0];
+              cloudData.lastImportTime = formatTimestampToSeconds(latest.uploadedAt);
+              cloudData.lastImportTimestamp = Math.floor(new Date(latest.uploadedAt).getTime() / 1000);
+            }
             saveLocalDiskData(cloudData);
             return cloudData;
           }
@@ -118,7 +160,9 @@ async function saveSystemDataAsync(data: SystemData) {
         passwordHash: data.passwordHash || '',
         viewPasswordHash: data.viewPasswordHash || '',
         viewPasswordEnabled: data.viewPasswordEnabled !== undefined ? data.viewPasswordEnabled : true,
-        updatedAt: new Date().toISOString(),
+        updatedAt: data.updatedAt || new Date().toISOString(),
+        lastImportTime: data.lastImportTime || '',
+        lastImportTimestamp: data.lastImportTimestamp || 0,
       };
       // Fire and forget or background await to prevent hanging HTTP responses
       setDoc(docRef, sanitizedData).catch((err) => {
@@ -132,15 +176,82 @@ async function saveSystemDataAsync(data: SystemData) {
 
 // --- API ROUTES ---
 
+// Middleware or helper to verify role is not browse-only
+function checkNotViewRole(req: express.Request, res: express.Response): boolean {
+  const role = req.headers['x-auth-role'] || (req.body && req.body.authRole);
+  if (role === 'view') {
+    res.status(403).json({
+      error: '浏览模式下禁止向服务器端同步或修改数据',
+      code: 'FORBIDDEN_VIEW_MODE',
+    });
+    return false;
+  }
+  return true;
+}
+
+// Lightweight server status for fast conflict checks & polling
+app.get('/api/status', async (req, res) => {
+  try {
+    const data = await getSystemDataAsync();
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    });
+    res.json({
+      lastImportTime: data.lastImportTime || '',
+      lastImportTimestamp: data.lastImportTimestamp || 0,
+      updatedAt: data.updatedAt || '',
+      batchesCount: data.batches?.length || 0,
+      recordsCount: data.records?.length || 0,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: '获取服务器状态失败' });
+  }
+});
+
 // Sync full system state from authoritative client/cloud
 app.post('/api/sync', async (req, res) => {
   try {
-    const { data } = req.body;
-    if (data && Array.isArray(data.batches) && Array.isArray(data.records)) {
-      await saveSystemDataAsync(data);
-      return res.json({ success: true, data });
+    if (!checkNotViewRole(req, res)) return;
+
+    const { data: incomingData, force, clientLastImportTimestamp } = req.body;
+    if (!incomingData || !Array.isArray(incomingData.batches) || !Array.isArray(incomingData.records)) {
+      return res.status(400).json({ error: '无效的数据格式' });
     }
-    return res.status(400).json({ error: '无效的数据格式' });
+
+    const currentServerData = await getSystemDataAsync();
+    const serverTs = currentServerData.lastImportTimestamp || (currentServerData.lastImportTime ? Math.floor(new Date(currentServerData.lastImportTime).getTime() / 1000) : 0);
+    const clientTs = clientLastImportTimestamp || incomingData.lastImportTimestamp || (incomingData.lastImportTime ? Math.floor(new Date(incomingData.lastImportTime).getTime() / 1000) : 0);
+
+    // If server has newer data and this is not a force overwrite from administrator:
+    if (!force && serverTs > clientTs && (currentServerData.batches?.length > 0 || currentServerData.records?.length > 0)) {
+      return res.status(409).json({
+        conflict: true,
+        message: '服务器端数据更新，请选择需要保留的数据',
+        serverLastImportTime: currentServerData.lastImportTime,
+        serverLastImportTimestamp: serverTs,
+        serverBatchesCount: currentServerData.batches?.length || 0,
+        serverRecordsCount: currentServerData.records?.length || 0,
+        serverData: currentServerData,
+      });
+    }
+
+    const now = getNowPrecise();
+    const finalData: SystemData = {
+      ...incomingData,
+      lastImportTime: incomingData.lastImportTime || now.formatted,
+      lastImportTimestamp: incomingData.lastImportTimestamp || now.timestamp,
+      updatedAt: now.iso,
+    };
+
+    await saveSystemDataAsync(finalData);
+    return res.json({
+      success: true,
+      data: finalData,
+      lastImportTime: finalData.lastImportTime,
+      lastImportTimestamp: finalData.lastImportTimestamp,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message || '同步数据失败' });
   }
@@ -161,9 +272,11 @@ app.get('/api/data', async (req, res) => {
   }
 });
 
-// Import batch & records
+// Import batch & records with server timestamp recorded to seconds
 app.post('/api/import', async (req, res) => {
   try {
+    if (!checkNotViewRole(req, res)) return;
+
     const { month, fileName, records } = req.body;
     if (!records || !Array.isArray(records) || records.length === 0) {
       return res.status(400).json({ error: '没有包含有效的销售记录' });
@@ -171,6 +284,7 @@ app.post('/api/import', async (req, res) => {
 
     const data = await getSystemDataAsync();
     const batchId = `batch_${Date.now()}`;
+    const now = getNowPrecise();
     
     // Collect all distinct months from records
     const monthsInRecords = Array.from(new Set(records.map((r: any) => r.month))).filter(Boolean);
@@ -186,7 +300,8 @@ app.post('/api/import', async (req, res) => {
           id: `${batchId}_m_${idx + 1}`,
           month: m,
           fileName: fileName ? `${fileName} (${m})` : `销售记录_${m}.xlsx`,
-          uploadedAt: new Date().toISOString(),
+          uploadedAt: now.formatted,
+          uploadedTimestamp: now.timestamp,
           recordCount: recsInMonth.length,
           totalAmount: recsInMonth.reduce((s: number, r: any) => s + (parseFloat(r.amount) || 0), 0),
         });
@@ -197,7 +312,8 @@ app.post('/api/import', async (req, res) => {
         id: batchId,
         month: targetMonth,
         fileName: fileName || `销售记录_${targetMonth}.xlsx`,
-        uploadedAt: new Date().toISOString(),
+        uploadedAt: now.formatted,
+        uploadedTimestamp: now.timestamp,
         recordCount: records.length,
         totalAmount,
       });
@@ -237,9 +353,19 @@ app.post('/api/import', async (req, res) => {
 
     data.batches.unshift(...newBatches);
     data.records.unshift(...formattedRecords);
+    data.lastImportTime = now.formatted;
+    data.lastImportTimestamp = now.timestamp;
+    data.updatedAt = now.iso;
+
     await saveSystemDataAsync(data);
 
-    res.json({ success: true, count: formattedRecords.length, data });
+    res.json({
+      success: true,
+      count: formattedRecords.length,
+      data,
+      lastImportTime: now.formatted,
+      lastImportTimestamp: now.timestamp,
+    });
   } catch (err: any) {
     console.error('Import API error:', err);
     res.status(500).json({ error: err.message || '导入数据失败' });
@@ -249,11 +375,13 @@ app.post('/api/import', async (req, res) => {
 // Delete specific import batch
 app.delete('/api/batches/:batchId', async (req, res) => {
   try {
+    if (!checkNotViewRole(req, res)) return;
     const { batchId } = req.params;
     const data = await getSystemDataAsync();
 
     data.batches = data.batches.filter((b) => b.id !== batchId);
     data.records = data.records.filter((r) => r.batchId !== batchId);
+    data.updatedAt = new Date().toISOString();
 
     await saveSystemDataAsync(data);
     res.json({ success: true, batchId, data });
@@ -265,6 +393,7 @@ app.delete('/api/batches/:batchId', async (req, res) => {
 // Update Single Record
 app.put('/api/records/:recordId', async (req, res) => {
   try {
+    if (!checkNotViewRole(req, res)) return;
     const { recordId } = req.params;
     const updatedFields = req.body;
     const data = await getSystemDataAsync();
@@ -287,6 +416,7 @@ app.put('/api/records/:recordId', async (req, res) => {
         };
       }
 
+      data.updatedAt = new Date().toISOString();
       await saveSystemDataAsync(data);
       return res.json({ success: true, record: data.records[idx], data });
     } else {
@@ -300,6 +430,7 @@ app.put('/api/records/:recordId', async (req, res) => {
 // Delete Single Record
 app.delete('/api/records/:recordId', async (req, res) => {
   try {
+    if (!checkNotViewRole(req, res)) return;
     const { recordId } = req.params;
     const data = await getSystemDataAsync();
 
@@ -307,6 +438,7 @@ app.delete('/api/records/:recordId', async (req, res) => {
     data.records = data.records.filter((r) => r.id !== recordId);
 
     if (data.records.length < initialLength) {
+      data.updatedAt = new Date().toISOString();
       await saveSystemDataAsync(data);
       return res.json({ success: true, recordId, data });
     } else {
@@ -320,6 +452,7 @@ app.delete('/api/records/:recordId', async (req, res) => {
 // Update Salesperson Config (Role, Custom New Rate, and Other Amount)
 app.put('/api/salesperson-config', async (req, res) => {
   try {
+    if (!checkNotViewRole(req, res)) return;
     const { salesperson, role, month, otherAmount, customNewRate } = req.body;
     if (!salesperson) {
       return res.status(400).json({ error: '销售人姓名不能为空' });
@@ -351,6 +484,7 @@ app.put('/api/salesperson-config', async (req, res) => {
       data.configs[salesperson].otherAmountByMonth![month] = otherAmount;
     }
 
+    data.updatedAt = new Date().toISOString();
     await saveSystemDataAsync(data);
     res.json({ success: true, config: data.configs[salesperson], data });
   } catch (err: any) {
@@ -361,12 +495,14 @@ app.put('/api/salesperson-config', async (req, res) => {
 // Update / Set Admin Password
 app.put('/api/auth/password', async (req, res) => {
   try {
+    if (!checkNotViewRole(req, res)) return;
     const { passwordHash } = req.body;
     if (!passwordHash) {
       return res.status(400).json({ error: '密码哈希不能为空' });
     }
     const data = await getSystemDataAsync();
     data.passwordHash = passwordHash;
+    data.updatedAt = new Date().toISOString();
     await saveSystemDataAsync(data);
     res.json({ success: true, passwordHash, data });
   } catch (err: any) {
@@ -377,6 +513,7 @@ app.put('/api/auth/password', async (req, res) => {
 // Update / Set View Password
 app.put('/api/auth/view-password', async (req, res) => {
   try {
+    if (!checkNotViewRole(req, res)) return;
     const { viewPasswordHash, enabled } = req.body;
     if (!viewPasswordHash) {
       return res.status(400).json({ error: '浏览密码哈希不能为空' });
@@ -384,6 +521,7 @@ app.put('/api/auth/view-password', async (req, res) => {
     const data = await getSystemDataAsync();
     data.viewPasswordHash = viewPasswordHash;
     data.viewPasswordEnabled = enabled !== undefined ? enabled : true;
+    data.updatedAt = new Date().toISOString();
     await saveSystemDataAsync(data);
     res.json({ success: true, viewPasswordHash, enabled: data.viewPasswordEnabled, data });
   } catch (err: any) {
@@ -394,6 +532,7 @@ app.put('/api/auth/view-password', async (req, res) => {
 // Reset / Clear All Data
 app.post('/api/reset', async (req, res) => {
   try {
+    if (!checkNotViewRole(req, res)) return;
     const current = await getSystemDataAsync();
     const emptyData: SystemData = {
       batches: [],
@@ -402,6 +541,9 @@ app.post('/api/reset', async (req, res) => {
       passwordHash: current.passwordHash,
       viewPasswordHash: current.viewPasswordHash,
       viewPasswordEnabled: current.viewPasswordEnabled,
+      lastImportTime: '',
+      lastImportTimestamp: 0,
+      updatedAt: new Date().toISOString(),
     };
     await saveSystemDataAsync(emptyData);
     res.json({ success: true, data: emptyData });

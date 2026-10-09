@@ -7,6 +7,7 @@ interface BatchHistoryModalProps {
   onClose: () => void;
   batches: ImportBatch[];
   onDeleteBatch: (batchId: string) => void;
+  isManagerAuthenticated?: boolean;
 }
 
 export const BatchHistoryModal: React.FC<BatchHistoryModalProps> = ({
@@ -14,6 +15,7 @@ export const BatchHistoryModal: React.FC<BatchHistoryModalProps> = ({
   onClose,
   batches,
   onDeleteBatch,
+  isManagerAuthenticated = false,
 }) => {
   const [deletingBatchId, setDeletingBatchId] = useState<string | null>(null);
 
@@ -31,7 +33,9 @@ export const BatchHistoryModal: React.FC<BatchHistoryModalProps> = ({
             <div>
               <h3 className="text-lg font-bold text-[#5A5A40]">历史导入批次管理</h3>
               <p className="text-xs text-[#8A8A70]">
-                可查看每次导入的Excel记录，并支持一键删除某次导入的数据
+                {isManagerAuthenticated
+                  ? '可查看每次导入的Excel记录，并支持一键删除某次导入的数据'
+                  : '查看每次导入的Excel记录与批次明细'}
               </p>
             </div>
           </div>
@@ -84,37 +88,39 @@ export const BatchHistoryModal: React.FC<BatchHistoryModalProps> = ({
                     </div>
                   </div>
 
-                  {/* Delete Button with Inline Confirmation */}
-                  {isConfirming ? (
-                    <div className="flex items-center gap-2 self-end sm:self-auto bg-rose-50 border border-rose-200 p-1.5 rounded-lg">
-                      <span className="text-xs font-semibold text-rose-700 flex items-center gap-1">
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        确认删除这 {batch.recordCount} 笔数据？
-                      </span>
+                  {/* Delete Button with Inline Confirmation (Admin Only) */}
+                  {isManagerAuthenticated && (
+                    isConfirming ? (
+                      <div className="flex items-center gap-2 self-end sm:self-auto bg-rose-50 border border-rose-200 p-1.5 rounded-lg">
+                        <span className="text-xs font-semibold text-rose-700 flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          确认删除这 {batch.recordCount} 笔数据？
+                        </span>
+                        <button
+                          onClick={() => {
+                            onDeleteBatch(batch.id);
+                            setDeletingBatchId(null);
+                          }}
+                          className="px-2.5 py-1 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded transition-colors cursor-pointer"
+                        >
+                          确定删除
+                        </button>
+                        <button
+                          onClick={() => setDeletingBatchId(null)}
+                          className="px-2.5 py-1 text-xs font-medium text-slate-600 bg-white hover:bg-slate-100 rounded border border-slate-200 transition-colors cursor-pointer"
+                        >
+                          取消
+                        </button>
+                      </div>
+                    ) : (
                       <button
-                        onClick={() => {
-                          onDeleteBatch(batch.id);
-                          setDeletingBatchId(null);
-                        }}
-                        className="px-2.5 py-1 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded transition-colors cursor-pointer"
+                        onClick={() => setDeletingBatchId(batch.id)}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors self-end sm:self-auto cursor-pointer"
                       >
-                        确定删除
+                        <Trash2 className="w-3.5 h-3.5" />
+                        删除此批数据
                       </button>
-                      <button
-                        onClick={() => setDeletingBatchId(null)}
-                        className="px-2.5 py-1 text-xs font-medium text-slate-600 bg-white hover:bg-slate-100 rounded border border-slate-200 transition-colors cursor-pointer"
-                      >
-                        取消
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setDeletingBatchId(batch.id)}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors self-end sm:self-auto cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      删除此批数据
-                    </button>
+                    )
                   )}
                 </div>
               );

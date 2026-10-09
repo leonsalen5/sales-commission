@@ -25,11 +25,13 @@ import {
   processLocalSetPassword,
   processLocalSetViewPassword,
   processLocalToggleViewPassword,
+  mergeSystemDatasets,
 } from './utils/storage';
 import {
   saveSystemDataToCloud,
   subscribeToCloudSystemData,
   fetchAuthoritativeData,
+  fetchServerStatus,
 } from './utils/firebaseStorage';
 import { testConnection } from './firebase';
 import { getTodayDateString } from './utils/crypto';
@@ -52,6 +54,7 @@ import {
   SecuritySettingsModal,
 } from './components/AuthModals';
 import { ViewAccessGatekeeper } from './components/ViewAccessGatekeeper';
+import { SyncConflictModal } from './components/SyncConflictModal';
 import { AlertTriangle } from 'lucide-react';
 
 export default function App() {
@@ -81,6 +84,12 @@ export default function App() {
     return role === 'manager' || role === 'view';
   });
 
+  // Server vs Local Data Sync Conflict State
+  const [syncConflict, setSyncConflict] = useState<{
+    serverData: SystemData;
+    localData: SystemData;
+  } | null>(null);
+
   // Guard protected sensitive actions
   const runWithAuth = async (action: () => void) => {
     if (isManagerAuthenticated) {
@@ -92,7 +101,59 @@ export default function App() {
     setIsVerifyPasswordModalOpen(true);
   };
 
-  // Real-time Cloud Synchronization with Firebase Firestore
+  // Compare timestamps & check server sync state
+  const checkServerSyncState = async (allowPrompt: boolean = true) => {
+    try {
+      const serverData = await fetchAuthoritativeData();
+      if (!serverData) return;
+
+      const currentLocal = getLocalSystemData();
+      const serverTs = serverData.lastImportTimestamp || (serverData.lastImportTime ? Math.floor(new Date(serverData.lastImportTime).getTime() / 1000) : 0);
+      const localTs = currentLocal.lastImportTimestamp || (currentLocal.lastImportTime ? Math.floor(new Date(currentLocal.lastImportTime).getTime() / 1000) : 0);
+
+      const currentRole = sessionStorage.getItem('auth_role');
+      const isManager = currentRole === 'manager';
+
+      // 浏览模式下：禁止向服务器端同步数据，直接且仅在本地更新并展示服务器最新数据
+      if (!isManager) {
+        if (serverTs >= localTs || (serverData.records?.length > 0 && currentLocal.records?.length === 0)) {
+          setData(serverData);
+          saveLocalSystemData(serverData);
+          setCloudSyncState('synced');
+        }
+        return;
+      }
+
+      // 管理员模式下：
+      // 如果服务器端的数据更新 (serverTs > localTs)：
+      if (serverTs > localTs && (serverData.records?.length > 0 || serverData.batches?.length > 0)) {
+        const localHasData = currentLocal.records?.length > 0 || currentLocal.batches?.length > 0;
+        const isDifferent = localHasData && (
+          serverData.records?.length !== currentLocal.records?.length ||
+          serverData.batches?.length !== currentLocal.batches?.length
+        );
+
+        if (allowPrompt && isDifferent) {
+          // 弹出提示，告知服务器端数据更新，并要求管理员选择需要保留的数据
+          setSyncConflict({
+            serverData,
+            localData: currentLocal,
+          });
+        } else {
+          setData(serverData);
+          saveLocalSystemData(serverData);
+        }
+      } else if (serverData.records?.length > 0 && currentLocal.records?.length === 0) {
+        setData(serverData);
+        saveLocalSystemData(serverData);
+      }
+      setCloudSyncState('synced');
+    } catch (err) {
+      console.warn('Sync comparison check error:', err);
+    }
+  };
+
+  // Real-time Cloud Synchronization & Event listeners for tab switching
   useEffect(() => {
     testConnection();
 
@@ -111,30 +172,55 @@ export default function App() {
       }
     }
 
-    // 2. Fetch authoritative state immediately (vital for iPhone Safari / fresh devices)
-    fetchAuthoritativeData().then((cloudData) => {
-      if (cloudData && (cloudData.records.length > 0 || cloudData.passwordHash || cloudData.batches.length > 0)) {
-        setData(cloudData);
-        saveLocalSystemData(cloudData);
-        setCloudSyncState('synced');
+    // 2. Fetch and compare authoritative state immediately
+    checkServerSyncState(true);
 
-        setSelectedMonths((prev) => {
-          if (prev.length === 0) {
-            const cSet = new Set<string>();
-            cloudData.records.forEach((r) => r.month && cSet.add(r.month));
-            const cArr = Array.from(cSet).sort().reverse();
-            return cArr.length > 0 ? [cArr[0]] : [];
-          }
-          return prev;
-        });
+    // 3. Tab switch listeners (switching between Google Chrome and Safari or returning to window)
+    const handleWindowFocus = () => {
+      checkServerSyncState(true);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkServerSyncState(true);
       }
-    });
+    };
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // 3. Start Real-time Firebase Cloud Listener (Authoritative Single Source of Truth)
+    // 4. Start Real-time Firebase Cloud Listener
     setCloudSyncState('syncing');
     const unsubscribe = subscribeToCloudSystemData(
       (cloudData) => {
         setCloudSyncState('synced');
+        const role = sessionStorage.getItem('auth_role');
+        const isManager = role === 'manager';
+
+        // 浏览模式下：只更新本地显示，绝不向服务器回写
+        if (!isManager) {
+          setData(cloudData);
+          saveLocalSystemData(cloudData);
+          return;
+        }
+
+        // 管理员模式下：核对时间戳
+        const currentLocal = getLocalSystemData();
+        const cloudTs = cloudData.lastImportTimestamp || 0;
+        const localTs = currentLocal.lastImportTimestamp || 0;
+
+        if (cloudTs > localTs && (cloudData.batches?.length > 0 || cloudData.records?.length > 0)) {
+          const hasDiff = currentLocal.records?.length > 0 && (
+            cloudData.records?.length !== currentLocal.records?.length ||
+            cloudData.batches?.length !== currentLocal.batches?.length
+          );
+          if (hasDiff) {
+            setSyncConflict({
+              serverData: cloudData,
+              localData: currentLocal,
+            });
+            return;
+          }
+        }
+
         setData(cloudData);
         saveLocalSystemData(cloudData);
 
@@ -151,7 +237,6 @@ export default function App() {
       () => {
         // Document not found in fresh setup
         setCloudSyncState('synced');
-        // NOTE: NEVER auto-push stale local storage to cloud! Read only.
       },
       (err) => {
         console.warn('Firebase cloud listener warning:', err);
@@ -160,6 +245,8 @@ export default function App() {
     );
 
     return () => {
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       unsubscribe();
     };
   }, []);
@@ -224,15 +311,49 @@ export default function App() {
   }, [data.records, data.configs, selectedMonths]);
 
   // Helper to atomically commit data updates to state, local storage, cloud, and server mirror
-  const commitDataUpdate = async (nextData: SystemData) => {
+  const commitDataUpdate = async (nextData: SystemData, force: boolean = false) => {
+    // 浏览模式下，禁止向服务器端同步数据
+    if (!isManagerAuthenticated) {
+      console.warn('浏览模式下禁止向服务器端同步数据');
+      return;
+    }
+
     setData(nextData);
     saveLocalSystemData(nextData);
-    await saveSystemDataToCloud(nextData);
-    fetch('/api/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: nextData }),
-    }).catch(() => {});
+
+    const result = await saveSystemDataToCloud(nextData, { force });
+    if (result.conflict && result.serverData) {
+      // 弹出冲突提示，要求管理员选择
+      setSyncConflict({
+        serverData: result.serverData,
+        localData: nextData,
+      });
+    }
+  };
+
+  // 冲突解决：保留服务器端数据（推荐）
+  const handleKeepServerData = () => {
+    if (!syncConflict) return;
+    const sData = syncConflict.serverData;
+    setData(sData);
+    saveLocalSystemData(sData);
+    setSyncConflict(null);
+  };
+
+  // 冲突解决：强制以本地数据覆盖服务器
+  const handleKeepLocalData = async () => {
+    if (!syncConflict) return;
+    const lData = syncConflict.localData;
+    await commitDataUpdate(lData, true);
+    setSyncConflict(null);
+  };
+
+  // 冲突解决：智能合并两者数据
+  const handleMergeBothData = async () => {
+    if (!syncConflict) return;
+    const merged = mergeSystemDatasets(syncConflict.localData, syncConflict.serverData);
+    await commitDataUpdate(merged, true);
+    setSyncConflict(null);
   };
 
   // Action: Confirm Import
@@ -241,6 +362,8 @@ export default function App() {
     fileName: string,
     records: SalesRecord[]
   ) => {
+    if (!isManagerAuthenticated) return;
+
     // Pull freshest cloud data before merging to prevent overwriting any data from another device!
     const latestCloud = await fetchAuthoritativeData();
     const baseData = latestCloud || data;
@@ -473,6 +596,7 @@ export default function App() {
         cloudSyncState={cloudSyncState}
         batchCount={data.batches.length}
         recordCount={filteredRecords.length}
+        lastImportTime={data.lastImportTime}
       />
 
       {/* Month Filter & Controls */}
@@ -497,11 +621,12 @@ export default function App() {
             <SalespersonTable
               summaries={salespersonSummaries}
               configs={data.configs}
-              onUpdateRole={(sp, role) => runWithAuth(() => handleUpdateRole(sp, role))}
+              onUpdateRole={(sp, role, customRate) => runWithAuth(() => handleUpdateRole(sp, role, customRate))}
               onUpdateOtherAmount={(sp, amt) =>
                 runWithAuth(() => handleUpdateOtherAmount(sp, amt))
               }
               selectedMonth={selectedMonths[0] || ''}
+              isManagerAuthenticated={isManagerAuthenticated}
             />
 
             {/* 2. 老师提成合计表 */}
@@ -524,6 +649,7 @@ export default function App() {
                 })
               }
               onDeleteRecord={(id) => runWithAuth(() => handleDeleteRecord(id))}
+              isManagerAuthenticated={isManagerAuthenticated}
             />
 
             {/* 5. 多维业绩与提成统计概览 (按年份、近一年、近半年、近三个月) - 含柱状图与扇形图 */}
@@ -569,6 +695,7 @@ export default function App() {
         onClose={() => setIsHistoryModalOpen(false)}
         batches={data.batches}
         onDeleteBatch={(batchId) => runWithAuth(() => handleDeleteBatch(batchId))}
+        isManagerAuthenticated={isManagerAuthenticated}
       />
 
       <RuleModal
@@ -641,6 +768,18 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {/* System Sync Conflict Resolution Modal */}
+      {syncConflict && (
+        <SyncConflictModal
+          isOpen={!!syncConflict}
+          serverData={syncConflict.serverData}
+          localData={syncConflict.localData}
+          onKeepServer={handleKeepServerData}
+          onKeepLocal={handleKeepLocalData}
+          onMergeBoth={handleMergeBothData}
+          onClose={() => setSyncConflict(null)}
+        />
       )}
     </div>
   );

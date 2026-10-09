@@ -15,6 +15,7 @@ import {
   Eye,
   LogOut,
   KeyRound,
+  Clock,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -34,6 +35,7 @@ interface HeaderProps {
   cloudSyncState?: 'synced' | 'syncing' | 'offline';
   batchCount: number;
   recordCount: number;
+  lastImportTime?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -53,6 +55,7 @@ export const Header: React.FC<HeaderProps> = ({
   cloudSyncState = 'synced',
   batchCount,
   recordCount,
+  lastImportTime,
 }) => {
   return (
     <header className="bg-white border-b border-[#E8E6DF] sticky top-0 z-30 shadow-2xs">
@@ -149,6 +152,17 @@ export const Header: React.FC<HeaderProps> = ({
                     </button>
                   )
                 )}
+
+                {/* Server Last Import Time (Accurate to second) */}
+                {lastImportTime && (
+                  <span
+                    className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[#F5F2EB] text-[#5A5A40] border border-[#E8E6DF]"
+                    title="服务器端记录的最后导入时间（精确到秒）"
+                  >
+                    <Clock className="w-3 h-3 text-[#8A8A70]" />
+                    <span>最后导入: <strong className="font-mono text-[#2C2C24] font-semibold">{lastImportTime}</strong></span>
+                  </span>
+                )}
               </div>
               <p className="text-xs text-[#8A8A70] mt-0.5">
                 月度销售Excel导入 • 销售与教师提成自动核算 • 多档位奖金阶梯计算 • 多月份导出
@@ -158,25 +172,6 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Action Buttons */}
           <div className="flex items-center flex-wrap gap-2">
-            {/* Download Sample Template (Protected in guest mode) */}
-            <button
-              onClick={onDownloadSample}
-              className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg transition-colors border cursor-pointer ${
-                isManagerAuthenticated
-                  ? 'text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] border-[#E8E6DF]'
-                  : 'text-[#6A6A50] bg-[#FAF8F2] hover:bg-[#F2EFE6] border-[#E8E6DF]'
-              }`}
-              title={
-                isManagerAuthenticated
-                  ? '下载包含了正确表头格式和示例数据的Excel模板'
-                  : '访客受限：下载模板需管理员权限'
-              }
-            >
-              {!isManagerAuthenticated && <Lock className="w-3 h-3 text-[#A8A890]" />}
-              <Download className="w-3.5 h-3.5 text-[#8A8A70]" />
-              <span>下载模板</span>
-            </button>
-
             {/* Batch History (Viewable by everyone) */}
             <button
               onClick={onOpenBatchHistory}
@@ -192,90 +187,78 @@ export const Header: React.FC<HeaderProps> = ({
               )}
             </button>
 
-            {/* Export Excel (Protected in guest mode) */}
-            <button
-              onClick={onExportExcel}
-              disabled={recordCount === 0}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg transition-all border ${
-                recordCount === 0
-                  ? 'bg-[#F5F2EB] text-[#A8A890] border-[#E8E6DF] cursor-not-allowed'
-                  : isManagerAuthenticated
-                  ? 'bg-[#F0F5EF] text-[#5E7A56] border-[#D4E3D2] hover:bg-[#E8EFE1] shadow-2xs cursor-pointer'
-                  : 'bg-[#FAF8F2] text-[#6A6A50] border-[#E8E6DF] hover:bg-[#F2EFE6] cursor-pointer'
-              }`}
-              title={
-                recordCount === 0
-                  ? '暂无销售记录可供导出'
-                  : isManagerAuthenticated
-                  ? '导出完整核算明细与各类汇总报表Excel表格到本地'
-                  : '访客受限：导出Excel表格到本地需管理员权限'
-              }
-            >
-              {!isManagerAuthenticated && <Lock className="w-3 h-3 text-[#A8A890]" />}
-              <Download className="w-3.5 h-3.5" />
-              <span>导出Excel</span>
-            </button>
+            {/* Administrator Only Features - Hidden in visitor/guest mode */}
+            {isManagerAuthenticated && (
+              <>
+                {/* Download Sample Template */}
+                <button
+                  onClick={onDownloadSample}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg transition-colors border cursor-pointer text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] border-[#E8E6DF]"
+                  title="下载包含了正确表头格式和示例数据的Excel模板"
+                >
+                  <Download className="w-3.5 h-3.5 text-[#8A8A70]" />
+                  <span>下载模板</span>
+                </button>
 
-            {/* Single Record Modal (Protected in guest mode) */}
-            <button
-              onClick={onOpenSingleRecordModal}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded-lg transition-colors border border-[#E8E6DF] cursor-pointer"
-              title={
-                isManagerAuthenticated
-                  ? '手动录入单笔销售记录'
-                  : '访客受限：补录销售记录需管理员权限'
-              }
-            >
-              {!isManagerAuthenticated && <Lock className="w-3 h-3 text-[#A8A890]" />}
-              <PlusCircle className="w-3.5 h-3.5 text-[#8C8C70]" />
-              <span>单条补录</span>
-            </button>
+                {/* Export Excel */}
+                <button
+                  onClick={onExportExcel}
+                  disabled={recordCount === 0}
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg transition-all border ${
+                    recordCount === 0
+                      ? 'bg-[#F5F2EB] text-[#A8A890] border-[#E8E6DF] cursor-not-allowed'
+                      : 'bg-[#F0F5EF] text-[#5E7A56] border-[#D4E3D2] hover:bg-[#E8EFE1] shadow-2xs cursor-pointer'
+                  }`}
+                  title={
+                    recordCount === 0
+                      ? '暂无销售记录可供导出'
+                      : '导出完整核算明细与各类汇总报表Excel表格到本地'
+                  }
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>导出Excel</span>
+                </button>
 
-            {/* Import Excel Button (Protected in guest mode) */}
-            <button
-              onClick={onOpenImportModal}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg shadow-sm hover:shadow-xs transition-all cursor-pointer ${
-                isManagerAuthenticated
-                  ? 'text-white bg-[#8C8C70] hover:bg-[#7A7A60] active:bg-[#686850]'
-                  : 'text-[#4A4A38] bg-[#EAE8DD] hover:bg-[#E0DDD0] border border-[#D5D2C2]'
-              }`}
-              title={
-                isManagerAuthenticated
-                  ? '导入销售记录Excel表格并自动计算提成与奖金'
-                  : '访客受限：上传导入Excel需管理员权限'
-              }
-            >
-              {!isManagerAuthenticated ? (
-                <Lock className="w-3.5 h-3.5 text-[#7A7A60]" />
-              ) : (
-                <Upload className="w-3.5 h-3.5" />
-              )}
-              <span>导入销售Excel</span>
-            </button>
+                {/* Single Record Modal */}
+                <button
+                  onClick={onOpenSingleRecordModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded-lg transition-colors border border-[#E8E6DF] cursor-pointer"
+                  title="手动录入单笔销售记录"
+                >
+                  <PlusCircle className="w-3.5 h-3.5 text-[#8C8C70]" />
+                  <span>单条补录</span>
+                </button>
 
-            {/* Security Settings (Protected in guest mode) */}
-            <button
-              onClick={onOpenChangePasswordModal}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded-lg transition-colors border border-[#E8E6DF] cursor-pointer"
-              title="设置或修改访客浏览密码、管理员操作密码"
-            >
-              {!isManagerAuthenticated && <Lock className="w-3 h-3 text-[#A8A890]" />}
-              <ShieldCheck className="w-3.5 h-3.5 text-[#8C8C70]" />
-              <span>安全设置</span>
-            </button>
+                {/* Import Excel Button */}
+                <button
+                  onClick={onOpenImportModal}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg shadow-sm hover:shadow-xs transition-all cursor-pointer text-white bg-[#8C8C70] hover:bg-[#7A7A60] active:bg-[#686850]"
+                  title="导入销售记录Excel表格并自动计算提成与奖金"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>导入销售Excel</span>
+                </button>
 
-            {/* Reset Data (Protected in guest mode) */}
-            <button
-              onClick={onResetData}
-              className="p-2 text-[#A8A890] hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors ml-0.5 cursor-pointer"
-              title={
-                isManagerAuthenticated
-                  ? '清空所有数据（需确认）'
-                  : '访客受限：清空数据需管理员权限'
-              }
-            >
-              <RotateCcw className="w-4 h-4" />
-            </button>
+                {/* Security Settings */}
+                <button
+                  onClick={onOpenChangePasswordModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded-lg transition-colors border border-[#E8E6DF] cursor-pointer"
+                  title="设置或修改访客浏览密码、管理员操作密码"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-[#8C8C70]" />
+                  <span>安全设置</span>
+                </button>
+
+                {/* Reset Data */}
+                <button
+                  onClick={onResetData}
+                  className="p-2 text-[#A8A890] hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors ml-0.5 cursor-pointer"
+                  title="清空所有数据（需确认）"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

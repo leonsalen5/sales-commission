@@ -19,10 +19,8 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
     if (res.ok) {
       const serverData = (await res.json()) as SystemData;
       if (serverData && Array.isArray(serverData.batches) && Array.isArray(serverData.records)) {
-        if (serverData.records.length > 0 || serverData.batches.length > 0 || serverData.passwordHash) {
-          saveLocalSystemData(serverData);
-          return serverData;
-        }
+        saveLocalSystemData(serverData);
+        return serverData;
       }
     }
   } catch (err) {
@@ -48,76 +46,119 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
 }
 
 /**
- * Save complete SystemData to Firestore cloud database & server mirror
+ * Fetch lightweight server status for quick sync timestamp comparison
+ */
+export async function fetchServerStatus(): Promise<{
+  lastImportTime: string;
+  lastImportTimestamp: number;
+  batchesCount: number;
+  recordsCount: number;
+} | null> {
+  try {
+    const res = await fetch('/api/status', {
+      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (err) {
+    // silent
+  }
+  return null;
+}
+
+export interface SaveSystemResult {
+  success: boolean;
+  conflict?: boolean;
+  forbidden?: boolean;
+  serverData?: SystemData;
+  serverLastImportTime?: string;
+  serverLastImportTimestamp?: number;
+}
+
+/**
+ * Save complete SystemData to server mirror and Firestore cloud database.
+ * Strictly forbidden in visitor browse mode.
  */
 export async function saveSystemDataToCloud(
   data: SystemData,
-  options: { checkConflict?: boolean } = {}
-): Promise<boolean> {
-  try {
-    const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
+  options: { force?: boolean } = {}
+): Promise<SaveSystemResult> {
+  // 浏览模式下，禁止向服务器端同步数据
+  const currentRole = sessionStorage.getItem('auth_role');
+  if (currentRole === 'view') {
+    console.warn('浏览模式下禁止向服务器端同步数据');
+    return { success: false, forbidden: true };
+  }
 
-    // Conflict protection: If saving from client, ensure we are not overwriting a much larger/newer cloud dataset
-    if (options.checkConflict) {
-      try {
-        const existingSnap = await getDoc(docRef);
-        if (existingSnap.exists()) {
-          const existingData = existingSnap.data() as SystemData;
-          // If cloud has more batches and this was not an explicit user reset (records === 0)
-          if (
-            existingData.batches &&
-            data.batches &&
-            data.batches.length < existingData.batches.length &&
-            data.records.length > 0
-          ) {
-            console.warn(
-              'Conflict detected: cloud has more batches than incoming update. Aborting accidental overwrite.'
-            );
-            return false;
-          }
-        }
-      } catch (checkErr) {
-        // Non-blocking
-      }
+  const sanitizedData: SystemData = {
+    batches: data.batches || [],
+    records: data.records || [],
+    configs: data.configs || {},
+    passwordHash: data.passwordHash || '',
+    viewPasswordHash: data.viewPasswordHash || '',
+    viewPasswordEnabled: data.viewPasswordEnabled !== undefined ? data.viewPasswordEnabled : true,
+    updatedAt: data.updatedAt || new Date().toISOString(),
+    lastImportTime: data.lastImportTime || '',
+    lastImportTimestamp: data.lastImportTimestamp || 0,
+  };
+
+  // 1. First sync to server backend (authoritative on-disk store & seconds tracker)
+  try {
+    const syncRes = await fetch('/api/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-auth-role': currentRole || 'manager',
+      },
+      body: JSON.stringify({
+        data: sanitizedData,
+        force: options.force === true,
+        clientLastImportTimestamp: sanitizedData.lastImportTimestamp,
+      }),
+    });
+
+    if (syncRes.status === 409) {
+      // Conflict: Server has newer data! Prompt administrator
+      const conflictPayload = await syncRes.json();
+      return {
+        success: false,
+        conflict: true,
+        serverData: conflictPayload.serverData,
+        serverLastImportTime: conflictPayload.serverLastImportTime,
+        serverLastImportTimestamp: conflictPayload.serverLastImportTimestamp,
+      };
     }
 
-    const sanitizedData: SystemData = {
-      batches: data.batches || [],
-      records: data.records || [],
-      configs: data.configs || {},
-      passwordHash: data.passwordHash || '',
-      viewPasswordHash: data.viewPasswordHash || '',
-      viewPasswordEnabled: data.viewPasswordEnabled !== undefined ? data.viewPasswordEnabled : true,
-      updatedAt: new Date().toISOString(),
-    };
+    if (syncRes.status === 403) {
+      return { success: false, forbidden: true };
+    }
 
-    // 1. Write to Firestore
-    await setDoc(docRef, sanitizedData);
-
-    // 2. Mirror to server backend API
-    fetch('/api/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: sanitizedData }),
-    }).catch(() => {});
-
-    // 3. Persist locally as fast cache
-    saveLocalSystemData(sanitizedData);
-    return true;
-  } catch (error) {
-    console.error('Error saving data to Firebase Firestore:', error);
-    // Even if client Firestore failed, try server /api/sync as fallback!
-    try {
-      await fetch('/api/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data }),
-      });
-    } catch (_) {}
-
-    saveLocalSystemData(data);
-    return false;
+    if (syncRes.ok) {
+      const syncJson = await syncRes.json();
+      if (syncJson.data) {
+        sanitizedData.lastImportTime = syncJson.data.lastImportTime;
+        sanitizedData.lastImportTimestamp = syncJson.data.lastImportTimestamp;
+      }
+    }
+  } catch (serverErr) {
+    console.warn('Server sync error:', serverErr);
   }
+
+  // 2. Persist locally
+  saveLocalSystemData(sanitizedData);
+
+  // 3. Mirror to Firestore asynchronously
+  try {
+    const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
+    setDoc(docRef, sanitizedData).catch((e) => {
+      console.warn('Direct Firestore async mirror failed:', e);
+    });
+  } catch (fsErr) {
+    // Non-blocking
+  }
+
+  return { success: true };
 }
 
 /**

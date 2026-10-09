@@ -8,6 +8,7 @@ interface DetailRecordsTableProps {
   salespersonConfigs: Record<string, SalespersonConfig>;
   onEditRecord?: (record: SalesRecord) => void;
   onDeleteRecord?: (recordId: string) => void;
+  isManagerAuthenticated?: boolean;
 }
 
 export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
@@ -15,12 +16,15 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
   salespersonConfigs,
   onEditRecord,
   onDeleteRecord,
+  isManagerAuthenticated = false,
 }) => {
   const [searchKey, setSearchKey] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
   const [salespersonFilter, setSalespersonFilter] = useState<string>('ALL');
   const [teacherFilter, setTeacherFilter] = useState<string>('ALL');
   const [recordToDelete, setRecordToDelete] = useState<SalesRecord | null>(null);
+
+  const canManage = Boolean(isManagerAuthenticated && (onEditRecord || onDeleteRecord));
 
   // Pagination state for ultra-fast DOM rendering on 1000-2000+ items
   const [pageSize, setPageSize] = useState<number | 'ALL'>(50);
@@ -265,13 +269,13 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
                 老师提成金额
               </th>
               <th className="py-2.5 px-3 max-w-[220px] min-w-[100px]">备注</th>
-              <th className="py-2.5 px-3 text-center">操作</th>
+              {canManage && <th className="py-2.5 px-3 text-center">操作</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-[#F0EEE6] text-[#4A4A40]">
             {filteredRecords.length === 0 ? (
               <tr>
-                <td colSpan={13} className="py-8 text-center text-[#A8A890]">
+                <td colSpan={canManage ? 13 : 12} className="py-8 text-center text-[#A8A890]">
                   无符合条件的销售明细记录
                 </td>
               </tr>
@@ -358,30 +362,32 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
                     <td className="py-2.5 px-3 text-[#8A8A70] text-[11px] max-w-[220px] min-w-[100px] whitespace-normal break-words leading-relaxed">
                       {r.notes || '-'}
                     </td>
-                    <td className="py-2.5 px-3 text-center">
-                      <div className="flex items-center justify-center gap-1.5">
-                        {onEditRecord && (
-                          <button
-                            onClick={() => onEditRecord(r)}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded transition-colors border border-[#E8E6DF] cursor-pointer"
-                            title="修改此条记录"
-                          >
-                            <Pencil className="w-3 h-3 text-[#8C8C70]" />
-                            修改
-                          </button>
-                        )}
-                        {onDeleteRecord && (
-                          <button
-                            onClick={() => setRecordToDelete(r)}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-[#C25A5A] bg-[#FAF0F0] hover:bg-[#F2E0E0] rounded transition-colors border border-[#F0D5D5] cursor-pointer"
-                            title="删除此条记录"
-                          >
-                            <Trash2 className="w-3 h-3 text-[#C25A5A]" />
-                            删除
-                          </button>
-                        )}
-                      </div>
-                    </td>
+                    {canManage && (
+                      <td className="py-2.5 px-3 text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          {onEditRecord && (
+                            <button
+                              onClick={() => onEditRecord(r)}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-[#5A5A40] bg-[#F5F2EB] hover:bg-[#E8E6DF] rounded transition-colors border border-[#E8E6DF] cursor-pointer"
+                              title="修改此条记录"
+                            >
+                              <Pencil className="w-3 h-3 text-[#8C8C70]" />
+                              修改
+                            </button>
+                          )}
+                          {onDeleteRecord && (
+                            <button
+                              onClick={() => setRecordToDelete(r)}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-[#C25A5A] bg-[#FAF0F0] hover:bg-[#F2E0E0] rounded transition-colors border border-[#F0D5D5] cursor-pointer"
+                              title="删除此条记录"
+                            >
+                              <Trash2 className="w-3 h-3 text-[#C25A5A]" />
+                              删除
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 );
               })
@@ -406,7 +412,7 @@ export const DetailRecordsTable: React.FC<DetailRecordsTableProps> = ({
                 <td className="py-3 px-3 text-right font-extrabold text-[#5E7A56] bg-[#F0F5EF]">
                   ¥{totalTeacherCommission.toLocaleString()}
                 </td>
-                <td colSpan={2} className="py-3 px-3"></td>
+                <td colSpan={canManage ? 2 : 1} className="py-3 px-3"></td>
               </tr>
             </tfoot>
           )}

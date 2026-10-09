@@ -3,6 +3,94 @@ import { SystemData, ImportBatch, SalesRecord, SalespersonRole, SalespersonConfi
 
 const LOCAL_STORAGE_KEY = 'TRAINING_SCHOOL_COMMISSION_DATA_V1';
 
+/**
+ * 格式化时间精确到秒 (YYYY-MM-DD HH:mm:ss)
+ */
+export function formatTimestampToSeconds(ts?: number | string | Date): string {
+  const d = ts ? new Date(ts) : new Date();
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hours = pad(d.getHours());
+  const minutes = pad(d.getMinutes());
+  const seconds = pad(d.getSeconds());
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+/**
+ * 获取当前Unix秒数时间戳
+ */
+export function getCurrentTimestampSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+/**
+ * 智能合并两个 SystemData 数据集（本地与服务器冲突时供管理员选择）
+ */
+export function mergeSystemDatasets(localData: SystemData, serverData: SystemData): SystemData {
+  // 1. 合并批次（以 batch.id 为键，避免重复）
+  const batchMap = new Map<string, ImportBatch>();
+  (serverData.batches || []).forEach((b) => batchMap.set(b.id, b));
+  (localData.batches || []).forEach((b) => {
+    if (!batchMap.has(b.id)) {
+      batchMap.set(b.id, b);
+    }
+  });
+  const mergedBatches = Array.from(batchMap.values()).sort((a, b) => {
+    return new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime();
+  });
+
+  // 2. 合并销售记录（以 record.id 为键，去重）
+  const recordMap = new Map<string, SalesRecord>();
+  (serverData.records || []).forEach((r) => recordMap.set(r.id, r));
+  (localData.records || []).forEach((r) => {
+    if (!recordMap.has(r.id)) {
+      recordMap.set(r.id, r);
+    }
+  });
+  const mergedRecords = Array.from(recordMap.values());
+
+  // 3. 合并人员配置
+  const mergedConfigs: Record<string, SalespersonConfig> = {
+    ...(serverData.configs || {}),
+  };
+  Object.entries(localData.configs || {}).forEach(([sp, localCfg]) => {
+    if (!mergedConfigs[sp]) {
+      mergedConfigs[sp] = localCfg;
+    } else {
+      mergedConfigs[sp] = {
+        ...mergedConfigs[sp],
+        role: localCfg.role || mergedConfigs[sp].role,
+        customNewRate: localCfg.customNewRate !== undefined ? localCfg.customNewRate : mergedConfigs[sp].customNewRate,
+        otherAmountByMonth: {
+          ...(mergedConfigs[sp].otherAmountByMonth || {}),
+          ...(localCfg.otherAmountByMonth || {}),
+        },
+      };
+    }
+  });
+
+  const nowFormatted = formatTimestampToSeconds();
+  const nowTs = getCurrentTimestampSeconds();
+
+  const mergedData: SystemData = {
+    batches: mergedBatches,
+    records: mergedRecords,
+    configs: mergedConfigs,
+    passwordHash: serverData.passwordHash || localData.passwordHash,
+    viewPasswordHash: serverData.viewPasswordHash || localData.viewPasswordHash,
+    viewPasswordEnabled: serverData.viewPasswordEnabled !== undefined ? serverData.viewPasswordEnabled : localData.viewPasswordEnabled,
+    updatedAt: new Date().toISOString(),
+    lastImportTime: nowFormatted,
+    lastImportTimestamp: nowTs,
+  };
+
+  saveLocalSystemData(mergedData);
+  return mergedData;
+}
+
 export const EMPTY_SYSTEM_DATA: SystemData = {
   batches: [],
   records: [],
@@ -145,6 +233,8 @@ export function processLocalImport(
   const isMultiMonth = monthsInRecords.length > 1;
 
   const totalAmount = records.reduce((sum, r) => sum + (r.amount || 0), 0);
+  const nowFormatted = formatTimestampToSeconds();
+  const nowTs = getCurrentTimestampSeconds();
 
   const newBatches: ImportBatch[] = [];
   if (isMultiMonth) {
@@ -154,7 +244,8 @@ export function processLocalImport(
         id: `${batchId}_m_${idx + 1}`,
         month: m,
         fileName: fileName ? `${fileName} (${m})` : `销售记录_${m}.xlsx`,
-        uploadedAt: new Date().toISOString(),
+        uploadedAt: nowFormatted,
+        uploadedTimestamp: nowTs,
         recordCount: recsInMonth.length,
         totalAmount: recsInMonth.reduce((s, r) => s + (r.amount || 0), 0),
       });
@@ -165,7 +256,8 @@ export function processLocalImport(
       id: batchId,
       month: targetMonth,
       fileName: fileName || `销售记录_${targetMonth}.xlsx`,
-      uploadedAt: new Date().toISOString(),
+      uploadedAt: nowFormatted,
+      uploadedTimestamp: nowTs,
       recordCount: records.length,
       totalAmount,
     });
@@ -210,6 +302,9 @@ export function processLocalImport(
     batches: [...newBatches, ...existingBatches],
     records: [...formattedRecords, ...existingRecords],
     configs: { ...currentData.configs },
+    updatedAt: new Date().toISOString(),
+    lastImportTime: nowFormatted,
+    lastImportTimestamp: nowTs,
   };
 
   saveLocalSystemData(updatedData);

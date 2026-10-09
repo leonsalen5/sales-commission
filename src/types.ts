@@ -20,7 +20,8 @@ export interface ImportBatch {
   id: string;
   month: string; // YYYY-MM
   fileName: string;
-  uploadedAt: string;
+  uploadedAt: string; // 精确到秒的时间字符串 (YYYY-MM-DD HH:mm:ss 或 ISO)
+  uploadedTimestamp?: number; // 导入时间戳 (Unix秒)
   recordCount: number;
   totalAmount: number;
 }
@@ -97,4 +98,6 @@ export interface SystemData {
   viewPasswordHash?: string; // 全站浏览访问密码（访客查阅权限）
   viewPasswordEnabled?: boolean; // 是否开启全站浏览密码保护
   updatedAt?: string; // 最后更新时间戳
+  lastImportTime?: string; // 服务器最后导入时间，精确到秒 (YYYY-MM-DD HH:mm:ss)
+  lastImportTimestamp?: number; // 服务器最后导入时间戳 (Unix秒)
 }
