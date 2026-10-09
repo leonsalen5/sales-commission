@@ -3,6 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import * as XLSX from 'xlsx';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
 import { SystemData, ImportBatch, SalesRecord, SalespersonConfig } from './src/types';
 
 const app = express();
@@ -14,8 +16,26 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
-// Ensure data folder and db file exist
-function getSystemData(): SystemData {
+// Initialize Firestore on Node.js server side
+let serverDb: any = null;
+const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
+if (fs.existsSync(firebaseConfigPath)) {
+  try {
+    const config = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8'));
+    const serverApp = getApps().length > 0 ? getApp() : initializeApp(config, 'backend_server_app');
+    serverDb = initializeFirestore(
+      serverApp,
+      { experimentalAutoDetectLongPolling: true },
+      config.firestoreDatabaseId || undefined
+    );
+    console.log('Server-side Firestore initialized successfully.');
+  } catch (err) {
+    console.warn('Failed to initialize server-side Firestore:', err);
+  }
+}
+
+// Local disk cache fallback
+function getLocalDiskData(): SystemData {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -25,6 +45,9 @@ function getSystemData(): SystemData {
         batches: [],
         records: [],
         configs: {},
+        passwordHash: '615ed7fb1504b0c724a296d7a69e6c7b2f9ea2c57c1d8206c5afdf392ebdfd25',
+        viewPasswordHash: '9800a8677d99e5f6968d7357e44006388b09d3b6a8676d0f930fbaa63d02330d',
+        viewPasswordEnabled: true,
       };
       fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
       return initial;
@@ -32,30 +55,85 @@ function getSystemData(): SystemData {
     const content = fs.readFileSync(DB_FILE, 'utf-8');
     return JSON.parse(content) as SystemData;
   } catch (err) {
-    console.error('Error reading system data:', err);
-    return { batches: [], records: [], configs: {} };
+    console.error('Error reading system data from disk:', err);
+    return { batches: [], records: [], configs: {}, viewPasswordEnabled: true };
   }
 }
 
-function saveSystemData(data: SystemData) {
+function saveLocalDiskData(data: SystemData) {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
-    console.error('Error saving system data:', err);
+    console.error('Error saving system data to disk:', err);
+  }
+}
+
+// Authoritative data fetcher (disk cache primary for instant Safari/mobile response, Firestore sync)
+async function getSystemDataAsync(): Promise<SystemData> {
+  const diskData = getLocalDiskData();
+
+  if (serverDb) {
+    try {
+      const docRef = doc(serverDb, 'system', 'app_state');
+      // 1.5 second max wait to prevent hanging requests on mobile/Safari
+      const snap = await Promise.race([
+        getDoc(docRef),
+        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+      ]);
+
+      if (snap && snap.exists && snap.exists()) {
+        const cloudData = snap.data() as SystemData;
+        if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
+          // If cloud has data, sync to disk and return
+          if (cloudData.records.length > 0 || cloudData.batches.length > 0) {
+            saveLocalDiskData(cloudData);
+            return cloudData;
+          }
+        }
+      }
+    } catch (err) {
+      // Fallback cleanly to disk data
+    }
+  }
+  return diskData;
+}
+
+// Authoritative data saver (writes to disk AND Firestore)
+async function saveSystemDataAsync(data: SystemData) {
+  saveLocalDiskData(data);
+  if (serverDb) {
+    try {
+      const docRef = doc(serverDb, 'system', 'app_state');
+      const sanitizedData: SystemData = {
+        batches: data.batches || [],
+        records: data.records || [],
+        configs: data.configs || {},
+        passwordHash: data.passwordHash || '',
+        viewPasswordHash: data.viewPasswordHash || '',
+        viewPasswordEnabled: data.viewPasswordEnabled !== undefined ? data.viewPasswordEnabled : true,
+        updatedAt: new Date().toISOString(),
+      };
+      // Fire and forget or background await to prevent hanging HTTP responses
+      setDoc(docRef, sanitizedData).catch((err) => {
+        console.error('Server Firestore async setDoc failed:', err);
+      });
+    } catch (err) {
+      console.error('Server Firestore write failed:', err);
+    }
   }
 }
 
 // --- API ROUTES ---
 
 // Sync full system state from authoritative client/cloud
-app.post('/api/sync', (req, res) => {
+app.post('/api/sync', async (req, res) => {
   try {
     const { data } = req.body;
     if (data && Array.isArray(data.batches) && Array.isArray(data.records)) {
-      saveSystemData(data);
+      await saveSystemDataAsync(data);
       return res.json({ success: true, data });
     }
     return res.status(400).json({ error: '无效的数据格式' });
@@ -64,21 +142,30 @@ app.post('/api/sync', (req, res) => {
   }
 });
 
-// Get all system data
-app.get('/api/data', (req, res) => {
-  const data = getSystemData();
-  res.json(data);
+// Get all system data with no-cache headers for Safari / iOS compatibility
+app.get('/api/data', async (req, res) => {
+  try {
+    const data = await getSystemDataAsync();
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    });
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: '获取数据失败' });
+  }
 });
 
 // Import batch & records
-app.post('/api/import', (req, res) => {
+app.post('/api/import', async (req, res) => {
   try {
     const { month, fileName, records } = req.body;
     if (!records || !Array.isArray(records) || records.length === 0) {
       return res.status(400).json({ error: '没有包含有效的销售记录' });
     }
 
-    const data = getSystemData();
+    const data = await getSystemDataAsync();
     const batchId = `batch_${Date.now()}`;
     
     // Collect all distinct months from records
@@ -146,7 +233,7 @@ app.post('/api/import', (req, res) => {
 
     data.batches.unshift(...newBatches);
     data.records.unshift(...formattedRecords);
-    saveSystemData(data);
+    await saveSystemDataAsync(data);
 
     res.json({ success: true, count: formattedRecords.length, data });
   } catch (err: any) {
@@ -156,15 +243,15 @@ app.post('/api/import', (req, res) => {
 });
 
 // Delete specific import batch
-app.delete('/api/batches/:batchId', (req, res) => {
+app.delete('/api/batches/:batchId', async (req, res) => {
   try {
     const { batchId } = req.params;
-    const data = getSystemData();
+    const data = await getSystemDataAsync();
 
     data.batches = data.batches.filter((b) => b.id !== batchId);
     data.records = data.records.filter((r) => r.batchId !== batchId);
 
-    saveSystemData(data);
+    await saveSystemDataAsync(data);
     res.json({ success: true, batchId, data });
   } catch (err: any) {
     res.status(500).json({ error: err.message || '删除导入失败' });
@@ -172,11 +259,11 @@ app.delete('/api/batches/:batchId', (req, res) => {
 });
 
 // Update Single Record
-app.put('/api/records/:recordId', (req, res) => {
+app.put('/api/records/:recordId', async (req, res) => {
   try {
     const { recordId } = req.params;
     const updatedFields = req.body;
-    const data = getSystemData();
+    const data = await getSystemDataAsync();
 
     const idx = data.records.findIndex((r) => r.id === recordId);
     if (idx !== -1) {
@@ -196,7 +283,7 @@ app.put('/api/records/:recordId', (req, res) => {
         };
       }
 
-      saveSystemData(data);
+      await saveSystemDataAsync(data);
       return res.json({ success: true, record: data.records[idx], data });
     } else {
       return res.status(404).json({ error: '未找到指定销售记录' });
@@ -207,16 +294,16 @@ app.put('/api/records/:recordId', (req, res) => {
 });
 
 // Delete Single Record
-app.delete('/api/records/:recordId', (req, res) => {
+app.delete('/api/records/:recordId', async (req, res) => {
   try {
     const { recordId } = req.params;
-    const data = getSystemData();
+    const data = await getSystemDataAsync();
 
     const initialLength = data.records.length;
     data.records = data.records.filter((r) => r.id !== recordId);
 
     if (data.records.length < initialLength) {
-      saveSystemData(data);
+      await saveSystemDataAsync(data);
       return res.json({ success: true, recordId, data });
     } else {
       return res.status(404).json({ error: '未找到指定销售记录' });
@@ -227,14 +314,14 @@ app.delete('/api/records/:recordId', (req, res) => {
 });
 
 // Update Salesperson Config (Role, Custom New Rate, and Other Amount)
-app.put('/api/salesperson-config', (req, res) => {
+app.put('/api/salesperson-config', async (req, res) => {
   try {
     const { salesperson, role, month, otherAmount, customNewRate } = req.body;
     if (!salesperson) {
       return res.status(400).json({ error: '销售人姓名不能为空' });
     }
 
-    const data = getSystemData();
+    const data = await getSystemDataAsync();
     if (!data.configs[salesperson]) {
       data.configs[salesperson] = {
         salesperson,
@@ -260,7 +347,7 @@ app.put('/api/salesperson-config', (req, res) => {
       data.configs[salesperson].otherAmountByMonth![month] = otherAmount;
     }
 
-    saveSystemData(data);
+    await saveSystemDataAsync(data);
     res.json({ success: true, config: data.configs[salesperson], data });
   } catch (err: any) {
     res.status(500).json({ error: err.message || '更新配置失败' });
@@ -268,15 +355,15 @@ app.put('/api/salesperson-config', (req, res) => {
 });
 
 // Update / Set Admin Password
-app.put('/api/auth/password', (req, res) => {
+app.put('/api/auth/password', async (req, res) => {
   try {
     const { passwordHash } = req.body;
     if (!passwordHash) {
       return res.status(400).json({ error: '密码哈希不能为空' });
     }
-    const data = getSystemData();
+    const data = await getSystemDataAsync();
     data.passwordHash = passwordHash;
-    saveSystemData(data);
+    await saveSystemDataAsync(data);
     res.json({ success: true, passwordHash, data });
   } catch (err: any) {
     res.status(500).json({ error: err.message || '设置密码失败' });
@@ -284,16 +371,16 @@ app.put('/api/auth/password', (req, res) => {
 });
 
 // Update / Set View Password
-app.put('/api/auth/view-password', (req, res) => {
+app.put('/api/auth/view-password', async (req, res) => {
   try {
     const { viewPasswordHash, enabled } = req.body;
     if (!viewPasswordHash) {
       return res.status(400).json({ error: '浏览密码哈希不能为空' });
     }
-    const data = getSystemData();
+    const data = await getSystemDataAsync();
     data.viewPasswordHash = viewPasswordHash;
     data.viewPasswordEnabled = enabled !== undefined ? enabled : true;
-    saveSystemData(data);
+    await saveSystemDataAsync(data);
     res.json({ success: true, viewPasswordHash, enabled: data.viewPasswordEnabled, data });
   } catch (err: any) {
     res.status(500).json({ error: err.message || '设置浏览密码失败' });
@@ -301,9 +388,9 @@ app.put('/api/auth/view-password', (req, res) => {
 });
 
 // Reset / Clear All Data
-app.post('/api/reset', (req, res) => {
+app.post('/api/reset', async (req, res) => {
   try {
-    const current = getSystemData();
+    const current = await getSystemDataAsync();
     const emptyData: SystemData = {
       batches: [],
       records: [],
@@ -312,7 +399,7 @@ app.post('/api/reset', (req, res) => {
       viewPasswordHash: current.viewPasswordHash,
       viewPasswordEnabled: current.viewPasswordEnabled,
     };
-    saveSystemData(emptyData);
+    await saveSystemDataAsync(emptyData);
     res.json({ success: true, data: emptyData });
   } catch (err: any) {
     res.status(500).json({ error: err.message || '重置数据失败' });

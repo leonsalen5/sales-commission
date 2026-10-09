@@ -96,4 +96,5 @@ export interface SystemData {
   passwordHash?: string; // 管理员操作密码（管理权限）
   viewPasswordHash?: string; // 全站浏览访问密码（访客查阅权限）
   viewPasswordEnabled?: boolean; // 是否开启全站浏览密码保护
+  updatedAt?: string; // 最后更新时间戳
 }

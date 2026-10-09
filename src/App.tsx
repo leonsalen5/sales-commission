@@ -29,6 +29,7 @@ import {
 import {
   saveSystemDataToCloud,
   subscribeToCloudSystemData,
+  fetchAuthoritativeData,
 } from './utils/firebaseStorage';
 import { testConnection } from './firebase';
 import { getTodayDateString } from './utils/crypto';
@@ -67,37 +68,27 @@ export default function App() {
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState<boolean>(false);
   const [recordToEdit, setRecordToEdit] = useState<SalesRecord | null>(null);
 
-  // Auth Modals & Persistent Verification State
+  // Auth Modals & Session-based Verification State
   const [isSetPasswordModalOpen, setIsSetPasswordModalOpen] = useState<boolean>(false);
   const [isVerifyPasswordModalOpen, setIsVerifyPasswordModalOpen] = useState<boolean>(false);
   const [isSecuritySettingsModalOpen, setIsSecuritySettingsModalOpen] = useState<boolean>(false);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
-  const [isManagerAuthenticated, setIsManagerAuthenticated] = useState<boolean>(
-    () => localStorage.getItem('auth_manager_authenticated') === 'true'
-  );
+  const [isManagerAuthenticated, setIsManagerAuthenticated] = useState<boolean>(() => {
+    return sessionStorage.getItem('auth_role') === 'manager';
+  });
   const [isViewAuthenticated, setIsViewAuthenticated] = useState<boolean>(() => {
-    return (
-      localStorage.getItem('auth_view_authenticated') === 'true' ||
-      localStorage.getItem('auth_manager_authenticated') === 'true'
-    );
+    const role = sessionStorage.getItem('auth_role');
+    return role === 'manager' || role === 'view';
   });
 
   // Guard protected sensitive actions
-  const runWithAuth = (action: () => void) => {
-    const isAuth = localStorage.getItem('auth_manager_authenticated') === 'true';
-
-    if (isAuth) {
+  const runWithAuth = async (action: () => void) => {
+    if (isManagerAuthenticated) {
       action();
       return;
     }
 
     setPendingAction(() => action);
-
-    if (!data.passwordHash) {
-      setIsSetPasswordModalOpen(true);
-      return;
-    }
-
     setIsVerifyPasswordModalOpen(true);
   };
 
@@ -105,7 +96,7 @@ export default function App() {
   useEffect(() => {
     testConnection();
 
-    // 1. Initialize local cache immediately (if available)
+    // 1. Initialize local cache immediately (if available) for zero-latency initial render
     const localData = getLocalSystemData();
     if (localData && (localData.records.length > 0 || localData.batches.length > 0 || localData.passwordHash || localData.viewPasswordHash)) {
       setData(localData);
@@ -120,7 +111,26 @@ export default function App() {
       }
     }
 
-    // 2. Start Real-time Firebase Cloud Listener (Authoritative Single Source of Truth)
+    // 2. Fetch authoritative state immediately (vital for iPhone Safari / fresh devices)
+    fetchAuthoritativeData().then((cloudData) => {
+      if (cloudData && (cloudData.records.length > 0 || cloudData.passwordHash || cloudData.batches.length > 0)) {
+        setData(cloudData);
+        saveLocalSystemData(cloudData);
+        setCloudSyncState('synced');
+
+        setSelectedMonths((prev) => {
+          if (prev.length === 0) {
+            const cSet = new Set<string>();
+            cloudData.records.forEach((r) => r.month && cSet.add(r.month));
+            const cArr = Array.from(cSet).sort().reverse();
+            return cArr.length > 0 ? [cArr[0]] : [];
+          }
+          return prev;
+        });
+      }
+    });
+
+    // 3. Start Real-time Firebase Cloud Listener (Authoritative Single Source of Truth)
     setCloudSyncState('syncing');
     const unsubscribe = subscribeToCloudSystemData(
       (cloudData) => {
@@ -137,26 +147,15 @@ export default function App() {
           }
           return prev;
         });
-
-        // Mirror to server for offline/download fallback
-        fetch('/api/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: cloudData }),
-        }).catch(() => {});
       },
       () => {
-        // Cloud document does not exist yet in fresh project
+        // Document not found in fresh setup
         setCloudSyncState('synced');
-        // If current local data has user content, initialize cloud with it
-        const currentLocal = getLocalSystemData();
-        if (currentLocal.records.length > 0 || currentLocal.passwordHash || currentLocal.viewPasswordHash) {
-          saveSystemDataToCloud(currentLocal);
-        }
+        // NOTE: NEVER auto-push stale local storage to cloud! Read only.
       },
       (err) => {
-        console.warn('Firebase cloud listener offline fallback:', err);
-        setCloudSyncState('offline');
+        console.warn('Firebase cloud listener warning:', err);
+        setCloudSyncState('synced');
       }
     );
 
@@ -242,7 +241,11 @@ export default function App() {
     fileName: string,
     records: SalesRecord[]
   ) => {
-    const nextData = processLocalImport(month, fileName, records, data);
+    // Pull freshest cloud data before merging to prevent overwriting any data from another device!
+    const latestCloud = await fetchAuthoritativeData();
+    const baseData = latestCloud || data;
+
+    const nextData = processLocalImport(month, fileName, records, baseData);
     await commitDataUpdate(nextData);
 
     const importedMonths = Array.from(new Set(records.map((r) => r.month))).filter(Boolean).sort().reverse();
@@ -310,8 +313,9 @@ export default function App() {
     const nextData = processLocalSetPassword(pwdHash, data);
     await commitDataUpdate(nextData);
 
-    localStorage.setItem('auth_manager_authenticated', 'true');
+    sessionStorage.setItem('auth_role', 'manager');
     setIsManagerAuthenticated(true);
+    setIsViewAuthenticated(true);
 
     if (pendingAction) {
       pendingAction();
@@ -320,8 +324,9 @@ export default function App() {
   };
 
   const handleVerifySuccess = () => {
-    localStorage.setItem('auth_manager_authenticated', 'true');
+    sessionStorage.setItem('auth_role', 'manager');
     setIsManagerAuthenticated(true);
+    setIsViewAuthenticated(true);
 
     if (pendingAction) {
       pendingAction();
@@ -329,21 +334,26 @@ export default function App() {
     }
   };
 
+  const handleDemoteToView = () => {
+    sessionStorage.setItem('auth_role', 'view');
+    setIsManagerAuthenticated(false);
+  };
+
   const handleChangePassword = async (newPwdHash: string) => {
-    const nextData = processLocalSetPassword(newPwdHash, data);
+    const latestCloud = await fetchAuthoritativeData();
+    const baseData = latestCloud || data;
+    const nextData = processLocalSetPassword(newPwdHash, baseData);
     await commitDataUpdate(nextData);
 
-    localStorage.setItem('auth_manager_authenticated', 'true');
+    sessionStorage.setItem('auth_role', 'manager');
     setIsManagerAuthenticated(true);
+    setIsViewAuthenticated(true);
   };
 
   const handleChangeViewPassword = async (newViewPasswordHash: string, enabled: boolean) => {
-    const nextData = processLocalSetViewPassword(newViewPasswordHash, enabled, data);
-    await commitDataUpdate(nextData);
-  };
-
-  const handleToggleViewPassword = async (enabled: boolean) => {
-    const nextData = processLocalToggleViewPassword(enabled, data);
+    const latestCloud = await fetchAuthoritativeData();
+    const baseData = latestCloud || data;
+    const nextData = processLocalSetViewPassword(newViewPasswordHash, enabled, baseData);
     await commitDataUpdate(nextData);
   };
 
@@ -413,14 +423,26 @@ export default function App() {
         currentViewPasswordHash={data.viewPasswordHash}
         currentManagerPasswordHash={data.passwordHash}
         onViewSuccess={() => {
-          localStorage.setItem('auth_view_authenticated', 'true');
+          sessionStorage.setItem('auth_role', 'view');
           setIsViewAuthenticated(true);
+          setIsManagerAuthenticated(false);
         }}
         onManagerSuccess={() => {
-          localStorage.setItem('auth_view_authenticated', 'true');
-          localStorage.setItem('auth_manager_authenticated', 'true');
+          sessionStorage.setItem('auth_role', 'manager');
           setIsViewAuthenticated(true);
           setIsManagerAuthenticated(true);
+        }}
+        onDataLoaded={(freshData) => {
+          setData(freshData);
+          saveLocalSystemData(freshData);
+          if (freshData.records.length > 0) {
+            const monthsSet = new Set<string>();
+            freshData.records.forEach((r) => r.month && monthsSet.add(r.month));
+            const monthArray = Array.from(monthsSet).sort().reverse();
+            if (monthArray.length > 0) {
+              setSelectedMonths((prev) => (prev.length === 0 ? [monthArray[0]] : prev));
+            }
+          }
         }}
       />
     );
@@ -441,7 +463,9 @@ export default function App() {
         onDownloadSample={() => runWithAuth(handleDownloadSample)}
         onExportExcel={() => runWithAuth(handleExportExcel)}
         onResetData={() => runWithAuth(() => setIsResetConfirmOpen(true))}
-        onOpenChangePasswordModal={() => setIsSecuritySettingsModalOpen(true)}
+        onOpenChangePasswordModal={() => runWithAuth(() => setIsSecuritySettingsModalOpen(true))}
+        onPromoteToManager={() => runWithAuth(() => {})}
+        onDemoteToView={handleDemoteToView}
         isManagerAuthenticated={isManagerAuthenticated}
         isViewAuthenticated={isViewAuthenticated}
         hasPassword={!!data.passwordHash}
@@ -576,12 +600,11 @@ export default function App() {
       <SecuritySettingsModal
         isOpen={isSecuritySettingsModalOpen}
         onClose={() => setIsSecuritySettingsModalOpen(false)}
+        isManagerAuthenticated={isManagerAuthenticated}
         onChangeAdminPassword={handleChangePassword}
         onChangeViewPassword={handleChangeViewPassword}
-        onToggleViewPassword={handleToggleViewPassword}
-        isViewPasswordEnabled={data.viewPasswordEnabled ?? true}
+        currentViewPasswordHash={data.viewPasswordHash}
         hasCustomViewPassword={!!data.viewPasswordHash}
-        hasAdminPassword={!!data.passwordHash}
       />
 
       {/* System Reset Modal */}

@@ -21,6 +21,14 @@
           "type": "string",
           "description": "SHA-256 hashed admin password for data modifications"
         },
+        "viewPasswordHash": {
+          "type": "string",
+          "description": "SHA-256 hashed password for viewing data"
+        },
+        "viewPasswordEnabled": {
+          "type": "boolean",
+          "description": "Whether view password protection is enabled"
+        },
         "updatedAt": {
           "type": "string",
           "description": "Timestamp of the last sync/update"
