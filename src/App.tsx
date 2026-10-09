@@ -116,18 +116,16 @@ export default function App() {
 
       // 浏览模式下：禁止向服务器端同步数据，直接且仅在本地更新并展示服务器最新数据
       if (!isManager) {
-        if (serverTs >= localTs || (serverData.records?.length > 0 && currentLocal.records?.length === 0)) {
-          setData(serverData);
-          saveLocalSystemData(serverData);
-          setCloudSyncState('synced');
-        }
+        setData(serverData);
+        saveLocalSystemData(serverData);
+        setCloudSyncState('synced');
         return;
       }
 
       // 管理员模式下：
       // 如果服务器端的数据更新 (serverTs > localTs)：
       if (serverTs > localTs && (serverData.records?.length > 0 || serverData.batches?.length > 0)) {
-        const localHasData = currentLocal.records?.length > 0 || currentLocal.batches?.length > 0;
+        const localHasData = (currentLocal.records?.length || 0) > 0 || (currentLocal.batches?.length || 0) > 0;
         const isDifferent = localHasData && (
           serverData.records?.length !== currentLocal.records?.length ||
           serverData.batches?.length !== currentLocal.batches?.length
@@ -143,7 +141,13 @@ export default function App() {
           setData(serverData);
           saveLocalSystemData(serverData);
         }
-      } else if (serverData.records?.length > 0 && currentLocal.records?.length === 0) {
+      } else if (serverTs === localTs) {
+        // 时间戳一致时，确保多浏览器刷新状态同步（比如Chrome已导入，Safari刷新）
+        if (serverData.records?.length !== data.records?.length || serverData.batches?.length !== data.batches?.length) {
+          setData(serverData);
+          saveLocalSystemData(serverData);
+        }
+      } else if (serverData.records?.length > 0 && (currentLocal.records?.length || 0) === 0) {
         setData(serverData);
         saveLocalSystemData(serverData);
       }
@@ -187,7 +191,7 @@ export default function App() {
     window.addEventListener('focus', handleWindowFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // 4. Start Real-time Firebase Cloud Listener
+    // 4. Start Real-time Server SSE and Cloud Listener
     setCloudSyncState('syncing');
     const unsubscribe = subscribeToCloudSystemData(
       (cloudData) => {
@@ -202,13 +206,18 @@ export default function App() {
           return;
         }
 
-        // 管理员模式下：核对时间戳
+        // 管理员模式下：核对时间戳，绝不被旧数据回退
         const currentLocal = getLocalSystemData();
-        const cloudTs = cloudData.lastImportTimestamp || 0;
-        const localTs = currentLocal.lastImportTimestamp || 0;
+        const incomingTs = cloudData.lastImportTimestamp || (cloudData.lastImportTime ? Math.floor(new Date(cloudData.lastImportTime).getTime() / 1000) : 0);
+        const localTs = currentLocal.lastImportTimestamp || (currentLocal.lastImportTime ? Math.floor(new Date(currentLocal.lastImportTime).getTime() / 1000) : 0);
 
-        if (cloudTs > localTs && (cloudData.batches?.length > 0 || cloudData.records?.length > 0)) {
-          const hasDiff = currentLocal.records?.length > 0 && (
+        // 如果传入数据时间比本地旧，绝不可用旧数据覆盖本地
+        if (incomingTs < localTs && (currentLocal.records?.length || 0) > 0) {
+          return;
+        }
+
+        if (incomingTs > localTs && (cloudData.batches?.length > 0 || cloudData.records?.length > 0)) {
+          const hasDiff = (currentLocal.records?.length || 0) > 0 && (
             cloudData.records?.length !== currentLocal.records?.length ||
             cloudData.batches?.length !== currentLocal.batches?.length
           );
@@ -239,7 +248,7 @@ export default function App() {
         setCloudSyncState('synced');
       },
       (err) => {
-        console.warn('Firebase cloud listener warning:', err);
+        console.warn('Sync listener warning:', err);
         setCloudSyncState('synced');
       }
     );

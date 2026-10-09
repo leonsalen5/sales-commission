@@ -88,6 +88,7 @@ function getLocalDiskData(): SystemData {
       const latestBatch = sortedBatches[0];
       parsed.lastImportTime = formatTimestampToSeconds(latestBatch.uploadedAt);
       parsed.lastImportTimestamp = Math.floor(new Date(latestBatch.uploadedAt).getTime() / 1000);
+      saveLocalDiskData(parsed);
     }
 
     return parsed;
@@ -105,6 +106,27 @@ function saveLocalDiskData(data: SystemData) {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
     console.error('Error saving system data to disk:', err);
+  }
+}
+
+// SSE Real-time Broadcaster for multi-browser and multi-device sync
+const sseClients = new Set<express.Response>();
+
+function broadcastDataChange(data: SystemData) {
+  const payload = JSON.stringify({
+    lastImportTime: data.lastImportTime || '',
+    lastImportTimestamp: data.lastImportTimestamp || 0,
+    updatedAt: data.updatedAt || '',
+    batchesCount: data.batches?.length || 0,
+    recordsCount: data.records?.length || 0,
+  });
+  const message = `event: data_update\ndata: ${payload}\n\n`;
+  for (const client of sseClients) {
+    try {
+      client.write(message);
+    } catch (e) {
+      sseClients.delete(client);
+    }
   }
 }
 
@@ -147,9 +169,19 @@ async function getSystemDataAsync(): Promise<SystemData> {
   return diskData;
 }
 
-// Authoritative data saver (writes to disk AND Firestore)
+// Authoritative data saver (writes to disk, broadcasts to all connected browsers, mirrors to Firestore)
 async function saveSystemDataAsync(data: SystemData) {
+  // Ensure lastImportTime and lastImportTimestamp are populated accurately to seconds
+  if (!data.lastImportTime && data.batches && data.batches.length > 0) {
+    const sortedBatches = [...data.batches].sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+    const latestBatch = sortedBatches[0];
+    data.lastImportTime = formatTimestampToSeconds(latestBatch.uploadedAt);
+    data.lastImportTimestamp = Math.floor(new Date(latestBatch.uploadedAt).getTime() / 1000);
+  }
+
   saveLocalDiskData(data);
+  broadcastDataChange(data);
+
   if (serverDb) {
     try {
       const docRef = doc(serverDb, 'system', 'app_state');
@@ -175,6 +207,35 @@ async function saveSystemDataAsync(data: SystemData) {
 }
 
 // --- API ROUTES ---
+
+// Server-Sent Events (SSE) route for real-time instant notification across all tabs/browsers
+app.get('/api/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  sseClients.add(res);
+
+  // Send initial ping to confirm stream
+  res.write(`event: ping\ndata: "connected"\n\n`);
+
+  req.on('close', () => {
+    sseClients.delete(res);
+  });
+});
+
+// Periodic heartbeat for SSE (every 15 seconds)
+setInterval(() => {
+  for (const client of sseClients) {
+    try {
+      client.write(`event: ping\ndata: "keepalive"\n\n`);
+    } catch (e) {
+      sseClients.delete(client);
+    }
+  }
+}, 15000);
 
 // Middleware or helper to verify role is not browse-only
 function checkNotViewRole(req: express.Request, res: express.Response): boolean {
@@ -265,6 +326,7 @@ app.get('/api/data', async (req, res) => {
       'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
       'Pragma': 'no-cache',
       'Expires': '0',
+      'Surrogate-Control': 'no-store',
     });
     res.json(data);
   } catch (err: any) {

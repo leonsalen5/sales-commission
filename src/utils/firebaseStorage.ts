@@ -7,19 +7,23 @@ const SYSTEM_COLLECTION = 'system';
 const APP_STATE_DOC = 'app_state';
 
 /**
- * Fetch authoritative SystemData from either backend /api/data (which has direct Firestore access)
- * or client Firestore getDoc.
+ * Fetch authoritative SystemData from backend /api/data with aggressive anti-cache parameters
+ * (critical for Safari/WebKit cross-browser synchronization), with Firestore fallback.
  */
 export async function fetchAuthoritativeData(): Promise<SystemData | null> {
   // 1. Try server endpoint first (fastest and most reliable on Safari/iOS)
   try {
-    const res = await fetch('/api/data', {
-      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+    const res = await fetch(`/api/data?_t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+      },
     });
     if (res.ok) {
       const serverData = (await res.json()) as SystemData;
       if (serverData && Array.isArray(serverData.batches) && Array.isArray(serverData.records)) {
-        saveLocalSystemData(serverData);
+        // Return server data directly without prematurely mutating localStorage
         return serverData;
       }
     }
@@ -34,7 +38,6 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
     if (snap.exists()) {
       const cloudData = snap.data() as SystemData;
       if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
-        saveLocalSystemData(cloudData);
         return cloudData;
       }
     }
@@ -169,28 +172,69 @@ export async function fetchSystemDataFromCloud(): Promise<SystemData | null> {
 }
 
 /**
- * Real-time listener for cloud data updates.
- * Any update by admin on any device will instantly reflect to all connected users.
+ * Real-time listener for server and cloud data updates.
+ * Leverages Server-Sent Events (SSE) for instant cross-tab / cross-browser sync,
+ * with Firestore onSnapshot fallback.
  */
 export function subscribeToCloudSystemData(
   onUpdate: (data: SystemData) => void,
   onNotFound?: () => void,
   onError?: (error: Error) => void
 ): Unsubscribe {
-  const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
+  let isUnsubscribed = false;
+  let sseSource: EventSource | null = null;
+  let pollTimer: any = null;
 
-  return onSnapshot(
+  // Real-time server sync via SSE
+  if (typeof window !== 'undefined' && typeof EventSource !== 'undefined') {
+    try {
+      sseSource = new EventSource('/api/events');
+      sseSource.addEventListener('data_update', async () => {
+        if (isUnsubscribed) return;
+        const fresh = await fetchAuthoritativeData();
+        if (fresh && !isUnsubscribed) {
+          onUpdate(fresh);
+        }
+      });
+      sseSource.onerror = () => {
+        // If SSE disconnects, fall back to low-frequency background poll
+        if (!pollTimer && !isUnsubscribed) {
+          pollTimer = setInterval(async () => {
+            if (isUnsubscribed) return;
+            const status = await fetchServerStatus();
+            if (status) {
+              const currentLocal = getLocalSystemData();
+              const localTs = currentLocal.lastImportTimestamp || 0;
+              if (status.lastImportTimestamp > localTs) {
+                const fresh = await fetchAuthoritativeData();
+                if (fresh && !isUnsubscribed) onUpdate(fresh);
+              }
+            }
+          }, 4000);
+        }
+      };
+      sseSource.onopen = () => {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      };
+    } catch (e) {
+      // Non-blocking
+    }
+  }
+
+  // Fallback / complementary Firestore snapshot listener
+  const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
+  const unsubFs = onSnapshot(
     docRef,
     (snapshot) => {
       if (snapshot.exists()) {
         const cloudData = snapshot.data() as SystemData;
         if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
-          // Cache locally
-          saveLocalSystemData(cloudData);
           onUpdate(cloudData);
         }
       } else {
-        // Document does not exist: strictly invoke callback, NEVER write back stale local data!
         if (onNotFound) onNotFound();
       }
     },
@@ -199,4 +243,11 @@ export function subscribeToCloudSystemData(
       if (onError) onError(error);
     }
   );
+
+  return () => {
+    isUnsubscribed = true;
+    if (sseSource) sseSource.close();
+    if (pollTimer) clearInterval(pollTimer);
+    unsubFs();
+  };
 }
