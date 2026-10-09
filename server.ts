@@ -75,10 +75,15 @@ function saveLocalDiskData(data: SystemData) {
 async function getSystemDataAsync(): Promise<SystemData> {
   const diskData = getLocalDiskData();
 
+  // If local disk already has populated data, return immediately for instant response (<5ms)
+  if (diskData && (diskData.records?.length > 0 || diskData.batches?.length > 0)) {
+    return diskData;
+  }
+
+  // If disk is empty, attempt to hydrate from Firestore cloud backup
   if (serverDb) {
     try {
       const docRef = doc(serverDb, 'system', 'app_state');
-      // 1.5 second max wait to prevent hanging requests on mobile/Safari
       const snap = await Promise.race([
         getDoc(docRef),
         new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
@@ -87,7 +92,6 @@ async function getSystemDataAsync(): Promise<SystemData> {
       if (snap && snap.exists && snap.exists()) {
         const cloudData = snap.data() as SystemData;
         if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
-          // If cloud has data, sync to disk and return
           if (cloudData.records.length > 0 || cloudData.batches.length > 0) {
             saveLocalDiskData(cloudData);
             return cloudData;
