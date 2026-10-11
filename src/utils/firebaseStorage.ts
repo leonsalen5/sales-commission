@@ -18,6 +18,26 @@ function isServerAvailable(): boolean {
 }
 
 /**
+ * Deep sanitization for Firestore:
+ * Firestore strictly forbids `undefined` in document objects and array elements.
+ * Recursively strips undefined keys from objects, and converts undefined in arrays to null.
+ */
+export function sanitizeForFirestore<T>(val: T): T {
+  if (val === undefined) return null as unknown as T;
+  if (val === null || typeof val !== 'object') return val;
+  if (Array.isArray(val)) {
+    return val.map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  const clean: Record<string, any> = {};
+  for (const [k, v] of Object.entries(val as Record<string, any>)) {
+    if (v !== undefined) {
+      clean[k] = sanitizeForFirestore(v);
+    }
+  }
+  return clean as T;
+}
+
+/**
  * Fetch authoritative SystemData:
  * 1. If backend exists, fetch from /api/data.
  * 2. If static hosting (GitHub Pages) or /api/data fails, read directly from Firestore via getDocFromServer.
@@ -66,7 +86,8 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
 
 /**
  * Perform an atomic transaction mutation on Firestore app_state.
- * Ensures multi-user concurrency and prevents stale overwrites!
+ * Ensures multi-user concurrency, prevents stale overwrites,
+ * and programmatically sanitizes all payloads to prevent Firestore undefined crashes!
  */
 export async function mutateFirestoreAppState(
   mutationFn: (current: SystemData) => SystemData
@@ -110,8 +131,11 @@ export async function mutateFirestoreAppState(
       ),
     };
 
-    transaction.set(docRef, finalizedData);
-    return finalizedData;
+    // Thoroughly remove any `undefined` fields before writing to Firestore
+    const sanitizedData = sanitizeForFirestore(finalizedData);
+
+    transaction.set(docRef, sanitizedData);
+    return sanitizedData;
   });
 
   saveLocalSystemData(result);
@@ -169,9 +193,21 @@ export async function firestoreDeleteBatch(batchId: string): Promise<SystemData>
 
 export async function firestoreUpdateRecord(record: SalesRecord): Promise<SystemData> {
   return mutateFirestoreAppState((current) => {
+    // Ensure salesperson has a configuration entry if modified
+    const configs = { ...(current.configs || {}) };
+    const sp = record.salesperson?.trim();
+    if (sp && !configs[sp]) {
+      configs[sp] = {
+        salesperson: sp,
+        role: '普通课程顾问',
+        otherAmountByMonth: {},
+      };
+    }
+
     return {
       ...current,
       records: (current.records || []).map((r) => (r.id === record.id ? record : r)),
+      configs,
     };
   });
 }

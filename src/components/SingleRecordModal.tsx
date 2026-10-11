@@ -178,9 +178,9 @@ export const SingleRecordModal: React.FC<SingleRecordModalProps> = ({
         await onAddRecord(newRecord.month, fileName, [newRecord]);
       }
       onClose();
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setErrorMsg('保存记录失败，请重试');
+      setErrorMsg(err?.message || '保存记录失败，请重试');
     } finally {
       setIsSubmitting(false);
     }

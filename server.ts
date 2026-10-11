@@ -177,6 +177,21 @@ async function getSystemDataAsync(): Promise<SystemData> {
 let isFirestoreSaving = false;
 let pendingFirestoreData: SystemData | null = null;
 
+function sanitizeForFirestore(val: any): any {
+  if (val === undefined) return null;
+  if (val === null || typeof val !== 'object') return val;
+  if (Array.isArray(val)) {
+    return val.map((item) => sanitizeForFirestore(item));
+  }
+  const clean: Record<string, any> = {};
+  for (const [k, v] of Object.entries(val)) {
+    if (v !== undefined) {
+      clean[k] = sanitizeForFirestore(v);
+    }
+  }
+  return clean;
+}
+
 async function triggerFirestoreBackgroundSave(data: SystemData) {
   if (!serverDb) return;
   pendingFirestoreData = data;
@@ -188,7 +203,7 @@ async function triggerFirestoreBackgroundSave(data: SystemData) {
     pendingFirestoreData = null;
     try {
       const docRef = doc(serverDb, 'system', 'app_state');
-      const sanitizedData: SystemData = {
+      const sanitizedData: SystemData = sanitizeForFirestore({
         batches: currentData.batches || [],
         records: currentData.records || [],
         configs: currentData.configs || {},
@@ -198,7 +213,7 @@ async function triggerFirestoreBackgroundSave(data: SystemData) {
         updatedAt: currentData.updatedAt || new Date().toISOString(),
         lastImportTime: currentData.lastImportTime || '',
         lastImportTimestamp: currentData.lastImportTimestamp || 0,
-      };
+      });
 
       await setDoc(docRef, sanitizedData);
       console.log(`[Firestore Background] Synced successfully (${sanitizedData.records.length} records, ${sanitizedData.batches.length} batches).`);
