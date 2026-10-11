@@ -404,9 +404,12 @@ export default function App() {
         }}
         onDataLoaded={(freshData) => {
           setData(freshData);
+          setLoading(false);
+          setCloudSyncState('synced');
           if (freshData.records.length > 0) {
             const monthsSet = new Set<string>();
             freshData.records.forEach((r) => r.month && monthsSet.add(r.month));
+            freshData.batches.forEach((b) => b.month && monthsSet.add(b.month));
             const monthArray = Array.from(monthsSet).sort().reverse();
             if (monthArray.length > 0) {
               setSelectedMonths((prev) => (prev.length === 0 ? [monthArray[0]] : prev));
