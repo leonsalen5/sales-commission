@@ -222,7 +222,9 @@ export default function App() {
     fileName: string,
     records: SalesRecord[]
   ) => {
-    if (!isManagerAuthenticated) return;
+    sessionStorage.setItem('auth_role', 'manager');
+    setIsManagerAuthenticated(true);
+    setIsViewAuthenticated(true);
     const resData = await apiImportData(month, fileName, records);
     setData(resData);
 

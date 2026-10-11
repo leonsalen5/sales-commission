@@ -174,9 +174,43 @@ async function getSystemDataAsync(): Promise<SystemData> {
   return cachedMasterData;
 }
 
-// Authoritative data saver: Updates in-memory state, disk file, broadcasts SSE, and mirrors to Firestore
+let isFirestoreSaving = false;
+let pendingFirestoreData: SystemData | null = null;
+
+async function triggerFirestoreBackgroundSave(data: SystemData) {
+  if (!serverDb) return;
+  pendingFirestoreData = data;
+  if (isFirestoreSaving) return;
+
+  isFirestoreSaving = true;
+  while (pendingFirestoreData) {
+    const currentData = pendingFirestoreData;
+    pendingFirestoreData = null;
+    try {
+      const docRef = doc(serverDb, 'system', 'app_state');
+      const sanitizedData: SystemData = {
+        batches: currentData.batches || [],
+        records: currentData.records || [],
+        configs: currentData.configs || {},
+        passwordHash: currentData.passwordHash || '',
+        viewPasswordHash: currentData.viewPasswordHash || '',
+        viewPasswordEnabled: currentData.viewPasswordEnabled !== undefined ? currentData.viewPasswordEnabled : true,
+        updatedAt: currentData.updatedAt || new Date().toISOString(),
+        lastImportTime: currentData.lastImportTime || '',
+        lastImportTimestamp: currentData.lastImportTimestamp || 0,
+      };
+
+      await setDoc(docRef, sanitizedData);
+      console.log(`[Firestore Background] Synced successfully (${sanitizedData.records.length} records, ${sanitizedData.batches.length} batches).`);
+    } catch (err) {
+      console.error('[Firestore Background] Write failed:', err);
+    }
+  }
+  isFirestoreSaving = false;
+}
+
+// Authoritative state updater (Immediate RAM cache + local disk + instant SSE broadcast + background Firestore sync)
 async function saveSystemDataAsync(data: SystemData) {
-  // Ensure lastImportTime and lastImportTimestamp are populated accurately to seconds
   if (!data.lastImportTime && data.batches && data.batches.length > 0) {
     const sortedBatches = [...data.batches].sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
     const latestBatch = sortedBatches[0];
@@ -188,24 +222,11 @@ async function saveSystemDataAsync(data: SystemData) {
   saveLocalDiskData(data);
   broadcastDataChange(data);
 
+  // Non-blocking background Firestore synchronization
   if (serverDb) {
-    try {
-      const docRef = doc(serverDb, 'system', 'app_state');
-      const sanitizedData: SystemData = {
-        batches: data.batches || [],
-        records: data.records || [],
-        configs: data.configs || {},
-        passwordHash: data.passwordHash || '',
-        viewPasswordHash: data.viewPasswordHash || '',
-        viewPasswordEnabled: data.viewPasswordEnabled !== undefined ? data.viewPasswordEnabled : true,
-        updatedAt: data.updatedAt || new Date().toISOString(),
-        lastImportTime: data.lastImportTime || '',
-        lastImportTimestamp: data.lastImportTimestamp || 0,
-      };
-      await setDoc(docRef, sanitizedData);
-    } catch (err) {
-      console.error('Server Firestore write failed:', err);
-    }
+    triggerFirestoreBackgroundSave(data).catch((err) => {
+      console.error('Background Firestore trigger error:', err);
+    });
   }
 }
 

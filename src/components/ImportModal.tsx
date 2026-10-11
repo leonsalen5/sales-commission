@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { X, Upload, FileSpreadsheet, Check, AlertCircle, Calendar } from 'lucide-react';
 import { SalesRecord } from '../types';
-import { parseExcelFile } from '../utils/excel';
+import { parseExcelFileWithReport } from '../utils/excel';
 
 interface ImportModalProps {
   isOpen: boolean;
@@ -21,6 +21,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   const [file, setFile] = useState<File | null>(null);
   const [targetMonth, setTargetMonth] = useState<string>('');
   const [parsedRecords, setParsedRecords] = useState<SalesRecord[]>([]);
+  const [detectedHeaders, setDetectedHeaders] = useState<Record<string, string>>({});
+  const [processedSheets, setProcessedSheets] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -29,6 +31,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     setFile(null);
     setTargetMonth('');
     setParsedRecords([]);
+    setDetectedHeaders({});
+    setProcessedSheets([]);
     setErrorMsg(null);
     setIsUploading(false);
     if (fileInputRef.current) {
@@ -52,19 +56,28 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     try {
       const buffer = await selectedFile.arrayBuffer();
       const batchId = `temp_import_${Date.now()}`;
-      // Parse without override to detect months directly from file rows and sheets
-      const rawRecords = parseExcelFile(buffer, batchId, undefined);
+      // Parse with smart header scanner
+      const report = parseExcelFileWithReport(buffer, batchId, undefined);
 
-      if (rawRecords.length === 0) {
-        setErrorMsg('文件解析为空，或未匹配到标准的销售记录表头（日期、收入、项目、类型、金额、销售人、老师、备注）');
+      if (report.records.length === 0) {
+        let msg = report.error || '文件解析为空，或未匹配到标准的销售记录表头';
+        if (report.sheetNames && report.sheetNames.length > 0) {
+          msg += `（工作表: ${report.sheetNames.join(', ')}）`;
+        }
+        setErrorMsg(msg);
         setParsedRecords([]);
+        setDetectedHeaders({});
+        setProcessedSheets([]);
         setTargetMonth('');
         return;
       }
 
+      setDetectedHeaders(report.detectedHeaders || {});
+      setProcessedSheets(report.processedSheets || []);
+
       // Check unique months in records
       const monthsSet = new Set<string>();
-      rawRecords.forEach((r) => {
+      report.records.forEach((r) => {
         if (r.month) monthsSet.add(r.month);
       });
       const uniqueMonths = Array.from(monthsSet).sort();
@@ -75,11 +88,13 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         setTargetMonth(''); // indicates multi-month mode
       }
 
-      setParsedRecords(rawRecords);
+      setParsedRecords(report.records);
     } catch (err: any) {
       console.error(err);
-      setErrorMsg('Excel文件解析失败，请确保格式正确');
+      setErrorMsg(`Excel文件解析失败: ${err.message || '请确保文件为有效Excel格式'}`);
       setParsedRecords([]);
+      setDetectedHeaders({});
+      setProcessedSheets([]);
       setTargetMonth('');
     }
   };
@@ -240,6 +255,53 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                   </span>
                 </div>
               </div>
+
+              {/* Detected Columns & Sheets */}
+              {Object.keys(detectedHeaders).length > 0 && (
+                <div className="text-[11px] bg-emerald-50/70 border border-emerald-200/80 rounded-lg p-2.5 text-emerald-900">
+                  <div className="font-semibold mb-1 flex items-center justify-between">
+                    <span>已匹配数据表头 ({processedSheets.join(', ')}):</span>
+                    <span className="text-[10px] text-emerald-700 font-normal">自动智能识别</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {detectedHeaders.date && (
+                      <span className="bg-white/90 px-2 py-0.5 rounded border border-emerald-200">
+                        日期: <strong>{detectedHeaders.date}</strong>
+                      </span>
+                    )}
+                    {detectedHeaders.income && (
+                      <span className="bg-white/90 px-2 py-0.5 rounded border border-emerald-200">
+                        收入/学员: <strong>{detectedHeaders.income}</strong>
+                      </span>
+                    )}
+                    {detectedHeaders.amount && (
+                      <span className="bg-white/90 px-2 py-0.5 rounded border border-emerald-200">
+                        金额: <strong>{detectedHeaders.amount}</strong>
+                      </span>
+                    )}
+                    {detectedHeaders.salesperson && (
+                      <span className="bg-white/90 px-2 py-0.5 rounded border border-emerald-200">
+                        销售人: <strong>{detectedHeaders.salesperson}</strong>
+                      </span>
+                    )}
+                    {detectedHeaders.project && (
+                      <span className="bg-white/90 px-2 py-0.5 rounded border border-emerald-200">
+                        课程: <strong>{detectedHeaders.project}</strong>
+                      </span>
+                    )}
+                    {detectedHeaders.type && (
+                      <span className="bg-white/90 px-2 py-0.5 rounded border border-emerald-200">
+                        类型: <strong>{detectedHeaders.type}</strong>
+                      </span>
+                    )}
+                    {detectedHeaders.teacher && (
+                      <span className="bg-white/90 px-2 py-0.5 rounded border border-emerald-200">
+                        老师: <strong>{detectedHeaders.teacher}</strong>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Data Preview Table */}
               <div>

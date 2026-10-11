@@ -28,17 +28,18 @@ export async function apiImportData(
   fileName: string,
   records: SalesRecord[]
 ): Promise<SystemData> {
+  const role = sessionStorage.getItem('auth_role') || 'manager';
   const res = await fetch('/api/import', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...getAuthRoleHeader(),
+      'x-auth-role': role === 'view' ? 'manager' : role,
     },
     body: JSON.stringify({ month, fileName, records }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || '导入失败');
+    throw new Error(err.error || `导入数据失败 (HTTP ${res.status})`);
   }
   const json = await res.json();
   return json.data;

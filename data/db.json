@@ -1,8 +1,8 @@
 {
-  "lastImportTimestamp": 1791690024,
-  "lastImportTime": "2026-10-11 03:40:24",
+  "lastImportTimestamp": 1791703983,
+  "lastImportTime": "2026-10-11 07:33:03",
   "passwordHash": "7f4b55b967d81e0371429b8b7e87a979630ae04949c25b1ad382b9766710828c",
-  "updatedAt": "2026-10-11T03:40:27.028Z",
+  "updatedAt": "2026-10-11T07:33:04.036Z",
   "batches": [
     {
       "fileName": "培训学校提成与奖金统计表_2024-01至2026-08.xlsx (2026-08)",
@@ -295,6 +295,11 @@
     "陈荣": {
       "role": "非自主招生课程顾问",
       "salesperson": "陈荣",
+      "otherAmountByMonth": {}
+    },
+    "李四": {
+      "salesperson": "李四",
+      "role": "普通课程顾问",
       "otherAmountByMonth": {}
     }
   },

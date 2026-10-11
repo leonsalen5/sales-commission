@@ -259,9 +259,9 @@ export const VerifyPasswordModal: React.FC<VerifyPasswordModalProps> = ({
         return;
       }
 
-      // 3. Fetch latest cloud state if targetHash is missing or needs checking
-      let targetHash = currentPasswordHash || expectedHash || DEFAULT_ADMIN_PASSWORD_HASH;
-      if (!targetHash) {
+      // 3. Fetch latest cloud/server state if not matched in memory
+      let targetHash = currentPasswordHash || expectedHash;
+      if (!targetHash || inputHash !== targetHash) {
         const cloudData = await fetchAuthoritativeData();
         if (cloudData?.passwordHash) {
           targetHash = cloudData.passwordHash;

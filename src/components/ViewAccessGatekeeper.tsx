@@ -88,8 +88,16 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
       let viewHash = activeViewHash || DEFAULT_VIEW_PASSWORD_HASH;
       let mgrHash = activeManagerHash || DEFAULT_ADMIN_PASSWORD_HASH;
 
-      // If hashes not yet ready from prop, fetch live state from server/cloud immediately
-      if (!viewHash || !mgrHash) {
+      let matchedManager =
+        (mgrHash && inputHash === mgrHash) ||
+        inputHash === DEFAULT_ADMIN_PASSWORD_HASH ||
+        inputHash === ADMIN_PERMISSION_CODE_HASH;
+      let matchedView =
+        (viewHash && inputHash === viewHash) ||
+        inputHash === DEFAULT_VIEW_PASSWORD_HASH;
+
+      // If neither matched in memory, refresh authoritative server data immediately
+      if (!matchedManager && !matchedView) {
         const freshData = await fetchAuthoritativeData();
         if (freshData) {
           if (freshData.viewPasswordHash) {
@@ -101,23 +109,25 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
             setActiveManagerHash(freshData.passwordHash);
           }
           if (onDataLoaded) onDataLoaded(freshData);
+
+          matchedManager =
+            (mgrHash && inputHash === mgrHash) ||
+            inputHash === DEFAULT_ADMIN_PASSWORD_HASH ||
+            inputHash === ADMIN_PERMISSION_CODE_HASH;
+          matchedView =
+            (viewHash && inputHash === viewHash) ||
+            inputHash === DEFAULT_VIEW_PASSWORD_HASH;
         }
       }
 
-      // 1. Matches configured or default Manager Password Hash -> Grant FULL Manager Access!
-      if ((mgrHash && inputHash === mgrHash) || inputHash === DEFAULT_ADMIN_PASSWORD_HASH) {
+      // 1. Grant FULL Manager Access
+      if (matchedManager) {
         onManagerSuccess();
         return;
       }
 
-      // 2. Matches Master Admin Permission Code Hash -> Grant FULL Manager Access!
-      if (inputHash === ADMIN_PERMISSION_CODE_HASH) {
-        onManagerSuccess();
-        return;
-      }
-
-      // 3. Matches configured or default View Password Hash -> Grant Visitor Browsing Access (read-only)!
-      if ((viewHash && inputHash === viewHash) || inputHash === DEFAULT_VIEW_PASSWORD_HASH) {
+      // 2. Grant Visitor Browsing Access (read-only)
+      if (matchedView) {
         onViewSuccess();
         return;
       }
@@ -150,17 +160,20 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
       }
 
       let mgrHash = activeManagerHash || DEFAULT_ADMIN_PASSWORD_HASH;
-      if (!mgrHash) {
+      let matched = (mgrHash && inputHash === mgrHash) || inputHash === DEFAULT_ADMIN_PASSWORD_HASH;
+
+      if (!matched) {
         const freshData = await fetchAuthoritativeData();
         if (freshData?.passwordHash) {
           mgrHash = freshData.passwordHash;
           setActiveManagerHash(freshData.passwordHash);
           if (onDataLoaded) onDataLoaded(freshData);
+          matched = (mgrHash && inputHash === mgrHash) || inputHash === DEFAULT_ADMIN_PASSWORD_HASH;
         }
       }
 
       // Matches Manager Password Hash
-      if ((mgrHash && inputHash === mgrHash) || inputHash === DEFAULT_ADMIN_PASSWORD_HASH) {
+      if (matched) {
         onManagerSuccess();
         return;
       }
