@@ -13,25 +13,23 @@ import {
 } from './utils/calculations';
 import { exportExcelWorkbook } from './utils/excel';
 import {
-  getLocalSystemData,
-  saveLocalSystemData,
   generateAndDownloadSampleExcel,
-  processLocalImport,
-  processLocalDeleteBatch,
-  processLocalUpdateConfig,
-  processLocalResetData,
-  processLocalUpdateRecord,
-  processLocalDeleteRecord,
-  processLocalSetPassword,
-  processLocalSetViewPassword,
-  processLocalToggleViewPassword,
-  mergeSystemDatasets,
+  EMPTY_SYSTEM_DATA,
 } from './utils/storage';
 import {
-  saveSystemDataToCloud,
+  apiFetchData,
+  apiImportData,
+  apiDeleteBatch,
+  apiUpdateRecord,
+  apiDeleteRecord,
+  apiUpdateConfig,
+  apiSetPassword,
+  apiSetViewPassword,
+  apiResetData,
+} from './services/api';
+import {
   subscribeToCloudSystemData,
   fetchAuthoritativeData,
-  fetchServerStatus,
 } from './utils/firebaseStorage';
 import { testConnection } from './firebase';
 import { getTodayDateString } from './utils/crypto';
@@ -54,12 +52,11 @@ import {
   SecuritySettingsModal,
 } from './components/AuthModals';
 import { ViewAccessGatekeeper } from './components/ViewAccessGatekeeper';
-import { SyncConflictModal } from './components/SyncConflictModal';
 import { AlertTriangle } from 'lucide-react';
 
 export default function App() {
-  const [data, setData] = useState<SystemData>(() => getLocalSystemData());
-  const [loading, setLoading] = useState<boolean>(false);
+  const [data, setData] = useState<SystemData>(() => EMPTY_SYSTEM_DATA);
+  const [loading, setLoading] = useState<boolean>(true);
   const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
   const [cloudSyncState, setCloudSyncState] = useState<'synced' | 'syncing' | 'offline'>('synced');
 
@@ -84,12 +81,6 @@ export default function App() {
     return role === 'manager' || role === 'view';
   });
 
-  // Server vs Local Data Sync Conflict State
-  const [syncConflict, setSyncConflict] = useState<{
-    serverData: SystemData;
-    localData: SystemData;
-  } | null>(null);
-
   // Guard protected sensitive actions
   const runWithAuth = async (action: () => void) => {
     if (isManagerAuthenticated) {
@@ -101,59 +92,29 @@ export default function App() {
     setIsVerifyPasswordModalOpen(true);
   };
 
-  // Compare timestamps & check server sync state
-  const checkServerSyncState = async (allowPrompt: boolean = true) => {
+  // Authoritative server data loader (Never uses stale localStorage!)
+  const refreshServerData = async () => {
     try {
-      const serverData = await fetchAuthoritativeData();
-      if (!serverData) return;
-
-      const currentLocal = getLocalSystemData();
-      const serverTs = serverData.lastImportTimestamp || (serverData.lastImportTime ? Math.floor(new Date(serverData.lastImportTime).getTime() / 1000) : 0);
-      const localTs = currentLocal.lastImportTimestamp || (currentLocal.lastImportTime ? Math.floor(new Date(currentLocal.lastImportTime).getTime() / 1000) : 0);
-
-      const currentRole = sessionStorage.getItem('auth_role');
-      const isManager = currentRole === 'manager';
-
-      // 浏览模式下：禁止向服务器端同步数据，直接且仅在本地更新并展示服务器最新数据
-      if (!isManager) {
-        setData(serverData);
-        saveLocalSystemData(serverData);
-        setCloudSyncState('synced');
-        return;
-      }
-
-      // 管理员模式下：
-      // 如果服务器端的数据更新 (serverTs > localTs)：
-      if (serverTs > localTs && (serverData.records?.length > 0 || serverData.batches?.length > 0)) {
-        const localHasData = (currentLocal.records?.length || 0) > 0 || (currentLocal.batches?.length || 0) > 0;
-        const isDifferent = localHasData && (
-          serverData.records?.length !== currentLocal.records?.length ||
-          serverData.batches?.length !== currentLocal.batches?.length
-        );
-
-        if (allowPrompt && isDifferent) {
-          // 弹出提示，告知服务器端数据更新，并要求管理员选择需要保留的数据
-          setSyncConflict({
-            serverData,
-            localData: currentLocal,
-          });
-        } else {
-          setData(serverData);
-          saveLocalSystemData(serverData);
-        }
-      } else if (serverTs === localTs) {
-        // 时间戳一致时，确保多浏览器刷新状态同步（比如Chrome已导入，Safari刷新）
-        if (serverData.records?.length !== data.records?.length || serverData.batches?.length !== data.batches?.length) {
-          setData(serverData);
-          saveLocalSystemData(serverData);
-        }
-      } else if (serverData.records?.length > 0 && (currentLocal.records?.length || 0) === 0) {
-        setData(serverData);
-        saveLocalSystemData(serverData);
-      }
+      setCloudSyncState('syncing');
+      const serverData = await apiFetchData();
+      setData(serverData);
+      setLoading(false);
       setCloudSyncState('synced');
+
+      setSelectedMonths((prev) => {
+        if (prev.length === 0) {
+          const monthsSet = new Set<string>();
+          serverData.records.forEach((r) => r.month && monthsSet.add(r.month));
+          serverData.batches.forEach((b) => b.month && monthsSet.add(b.month));
+          const monthArray = Array.from(monthsSet).sort().reverse();
+          return monthArray.length > 0 ? [monthArray[0]] : [];
+        }
+        return prev;
+      });
     } catch (err) {
-      console.warn('Sync comparison check error:', err);
+      console.warn('Failed to fetch authoritative server data:', err);
+      setCloudSyncState('offline');
+      setLoading(false);
     }
   };
 
@@ -161,95 +122,31 @@ export default function App() {
   useEffect(() => {
     testConnection();
 
-    // 1. Initialize local cache immediately (if available) for zero-latency initial render
-    const localData = getLocalSystemData();
-    if (localData && (localData.records.length > 0 || localData.batches.length > 0 || localData.passwordHash || localData.viewPasswordHash)) {
-      setData(localData);
+    // 1. Immediately load fresh authoritative data from server
+    refreshServerData();
 
-      const monthsSet = new Set<string>();
-      localData.records.forEach((r) => {
-        if (r.month) monthsSet.add(r.month);
-      });
-      const monthArray = Array.from(monthsSet).sort().reverse();
-      if (monthArray.length > 0) {
-        setSelectedMonths((prev) => (prev.length === 0 ? [monthArray[0]] : prev));
-      }
-    }
-
-    // 2. Fetch and compare authoritative state immediately
-    checkServerSyncState(true);
-
-    // 3. Tab switch listeners (switching between Google Chrome and Safari or returning to window)
+    // 2. Tab switch listeners (switching between Google Chrome and Safari or returning to window)
     const handleWindowFocus = () => {
-      checkServerSyncState(true);
+      refreshServerData();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        checkServerSyncState(true);
+        refreshServerData();
       }
     };
     window.addEventListener('focus', handleWindowFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // 4. Start Real-time Server SSE and Cloud Listener
-    setCloudSyncState('syncing');
+    // 3. Real-time broadcast listener (Server-Sent Events + Firestore)
     const unsubscribe = subscribeToCloudSystemData(
-      (cloudData) => {
+      (freshData) => {
+        setData(freshData);
         setCloudSyncState('synced');
-        const role = sessionStorage.getItem('auth_role');
-        const isManager = role === 'manager';
-
-        // 浏览模式下：只更新本地显示，绝不向服务器回写
-        if (!isManager) {
-          setData(cloudData);
-          saveLocalSystemData(cloudData);
-          return;
-        }
-
-        // 管理员模式下：核对时间戳，绝不被旧数据回退
-        const currentLocal = getLocalSystemData();
-        const incomingTs = cloudData.lastImportTimestamp || (cloudData.lastImportTime ? Math.floor(new Date(cloudData.lastImportTime).getTime() / 1000) : 0);
-        const localTs = currentLocal.lastImportTimestamp || (currentLocal.lastImportTime ? Math.floor(new Date(currentLocal.lastImportTime).getTime() / 1000) : 0);
-
-        // 如果传入数据时间比本地旧，绝不可用旧数据覆盖本地
-        if (incomingTs < localTs && (currentLocal.records?.length || 0) > 0) {
-          return;
-        }
-
-        if (incomingTs > localTs && (cloudData.batches?.length > 0 || cloudData.records?.length > 0)) {
-          const hasDiff = (currentLocal.records?.length || 0) > 0 && (
-            cloudData.records?.length !== currentLocal.records?.length ||
-            cloudData.batches?.length !== currentLocal.batches?.length
-          );
-          if (hasDiff) {
-            setSyncConflict({
-              serverData: cloudData,
-              localData: currentLocal,
-            });
-            return;
-          }
-        }
-
-        setData(cloudData);
-        saveLocalSystemData(cloudData);
-
-        setSelectedMonths((prev) => {
-          if (prev.length === 0) {
-            const cSet = new Set<string>();
-            cloudData.records.forEach((r) => r.month && cSet.add(r.month));
-            const cArr = Array.from(cSet).sort().reverse();
-            return cArr.length > 0 ? [cArr[0]] : [];
-          }
-          return prev;
-        });
+        setLoading(false);
       },
-      () => {
-        // Document not found in fresh setup
-        setCloudSyncState('synced');
-      },
+      undefined,
       (err) => {
-        console.warn('Sync listener warning:', err);
-        setCloudSyncState('synced');
+        console.warn('Real-time sync listener warning:', err);
       }
     );
 
@@ -319,66 +216,15 @@ export default function App() {
     );
   }, [data.records, data.configs, selectedMonths]);
 
-  // Helper to atomically commit data updates to state, local storage, cloud, and server mirror
-  const commitDataUpdate = async (nextData: SystemData, force: boolean = false) => {
-    // 浏览模式下，禁止向服务器端同步数据
-    if (!isManagerAuthenticated) {
-      console.warn('浏览模式下禁止向服务器端同步数据');
-      return;
-    }
-
-    setData(nextData);
-    saveLocalSystemData(nextData);
-
-    const result = await saveSystemDataToCloud(nextData, { force });
-    if (result.conflict && result.serverData) {
-      // 弹出冲突提示，要求管理员选择
-      setSyncConflict({
-        serverData: result.serverData,
-        localData: nextData,
-      });
-    }
-  };
-
-  // 冲突解决：保留服务器端数据（推荐）
-  const handleKeepServerData = () => {
-    if (!syncConflict) return;
-    const sData = syncConflict.serverData;
-    setData(sData);
-    saveLocalSystemData(sData);
-    setSyncConflict(null);
-  };
-
-  // 冲突解决：强制以本地数据覆盖服务器
-  const handleKeepLocalData = async () => {
-    if (!syncConflict) return;
-    const lData = syncConflict.localData;
-    await commitDataUpdate(lData, true);
-    setSyncConflict(null);
-  };
-
-  // 冲突解决：智能合并两者数据
-  const handleMergeBothData = async () => {
-    if (!syncConflict) return;
-    const merged = mergeSystemDatasets(syncConflict.localData, syncConflict.serverData);
-    await commitDataUpdate(merged, true);
-    setSyncConflict(null);
-  };
-
-  // Action: Confirm Import
+  // Action: Confirm Import (Direct atomic import to server)
   const handleConfirmImport = async (
     month: string,
     fileName: string,
     records: SalesRecord[]
   ) => {
     if (!isManagerAuthenticated) return;
-
-    // Pull freshest cloud data before merging to prevent overwriting any data from another device!
-    const latestCloud = await fetchAuthoritativeData();
-    const baseData = latestCloud || data;
-
-    const nextData = processLocalImport(month, fileName, records, baseData);
-    await commitDataUpdate(nextData);
+    const resData = await apiImportData(month, fileName, records);
+    setData(resData);
 
     const importedMonths = Array.from(new Set(records.map((r) => r.month))).filter(Boolean).sort().reverse();
     if (importedMonths.length > 0) {
@@ -388,62 +234,56 @@ export default function App() {
     }
   };
 
-  // Action: Delete Batch
+  // Action: Delete Batch (Direct atomic delete on server)
   const handleDeleteBatch = async (batchId: string) => {
-    const nextData = processLocalDeleteBatch(batchId, data);
-    await commitDataUpdate(nextData);
+    const resData = await apiDeleteBatch(batchId);
+    setData(resData);
   };
 
-  // Action: Update Single Record
+  // Action: Update Single Record (Direct atomic update on server)
   const handleUpdateRecord = async (updatedRecord: SalesRecord) => {
-    const nextData = processLocalUpdateRecord(updatedRecord, data);
-    await commitDataUpdate(nextData);
+    const resData = await apiUpdateRecord(updatedRecord);
+    setData(resData);
   };
 
-  // Action: Delete Single Record
+  // Action: Delete Single Record (Direct atomic delete on server)
   const handleDeleteRecord = async (recordId: string) => {
-    const nextData = processLocalDeleteRecord(recordId, data);
-    await commitDataUpdate(nextData);
+    const resData = await apiDeleteRecord(recordId);
+    setData(resData);
   };
 
-  // Action: Update Salesperson Role & Custom New Rate
+  // Action: Update Salesperson Role & Custom New Rate (Direct atomic update on server)
   const handleUpdateRole = async (
     salesperson: string,
     role: SalespersonRole,
     customNewRate?: number | null
   ) => {
-    const nextData = processLocalUpdateConfig(
+    const resData = await apiUpdateConfig({
       salesperson,
       role,
-      undefined,
-      undefined,
       customNewRate,
-      data
-    );
-    await commitDataUpdate(nextData);
+    });
+    setData(resData);
   };
 
-  // Action: Update Salesperson Other Amount
+  // Action: Update Salesperson Other Amount (Direct atomic update on server)
   const handleUpdateOtherAmount = async (
     salesperson: string,
     amount: number
   ) => {
     const monthStr = selectedMonths[0] || '2026-07';
-    const nextData = processLocalUpdateConfig(
+    const resData = await apiUpdateConfig({
       salesperson,
-      undefined,
-      monthStr,
-      amount,
-      undefined,
-      data
-    );
-    await commitDataUpdate(nextData);
+      month: monthStr,
+      otherAmount: amount,
+    });
+    setData(resData);
   };
 
-  // Auth Handlers
+  // Auth Handlers (Direct atomic updates on server)
   const handleSetPassword = async (pwdHash: string) => {
-    const nextData = processLocalSetPassword(pwdHash, data);
-    await commitDataUpdate(nextData);
+    const resData = await apiSetPassword(pwdHash);
+    setData(resData);
 
     sessionStorage.setItem('auth_role', 'manager');
     setIsManagerAuthenticated(true);
@@ -472,10 +312,8 @@ export default function App() {
   };
 
   const handleChangePassword = async (newPwdHash: string) => {
-    const latestCloud = await fetchAuthoritativeData();
-    const baseData = latestCloud || data;
-    const nextData = processLocalSetPassword(newPwdHash, baseData);
-    await commitDataUpdate(nextData);
+    const resData = await apiSetPassword(newPwdHash);
+    setData(resData);
 
     sessionStorage.setItem('auth_role', 'manager');
     setIsManagerAuthenticated(true);
@@ -483,10 +321,8 @@ export default function App() {
   };
 
   const handleChangeViewPassword = async (newViewPasswordHash: string, enabled: boolean) => {
-    const latestCloud = await fetchAuthoritativeData();
-    const baseData = latestCloud || data;
-    const nextData = processLocalSetViewPassword(newViewPasswordHash, enabled, baseData);
-    await commitDataUpdate(nextData);
+    const resData = await apiSetViewPassword(newViewPasswordHash, enabled);
+    setData(resData);
   };
 
   // Action: Download Sample Template
@@ -520,10 +356,10 @@ export default function App() {
     );
   };
 
-  // Action: Reset Data
+  // Action: Reset Data (Direct atomic reset on server)
   const handleResetData = async () => {
-    const nextData = processLocalResetData(data);
-    await commitDataUpdate(nextData);
+    const resData = await apiResetData();
+    setData(resData);
     setSelectedMonths([]);
     setIsResetConfirmOpen(false);
   };
@@ -566,7 +402,6 @@ export default function App() {
         }}
         onDataLoaded={(freshData) => {
           setData(freshData);
-          saveLocalSystemData(freshData);
           if (freshData.records.length > 0) {
             const monthsSet = new Set<string>();
             freshData.records.forEach((r) => r.month && monthsSet.add(r.month));
@@ -777,18 +612,6 @@ export default function App() {
             </div>
           </div>
         </div>
-      )}
-      {/* System Sync Conflict Resolution Modal */}
-      {syncConflict && (
-        <SyncConflictModal
-          isOpen={!!syncConflict}
-          serverData={syncConflict.serverData}
-          localData={syncConflict.localData}
-          onKeepServer={handleKeepServerData}
-          onKeepLocal={handleKeepLocalData}
-          onMergeBoth={handleMergeBothData}
-          onClose={() => setSyncConflict(null)}
-        />
       )}
     </div>
   );

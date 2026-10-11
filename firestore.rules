@@ -2,10 +2,14 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     match /system/{docId} {
-      allow read, write: if true;
+      allow read: if true;
+      // Prevent stale client browser caches from overwriting newer database state
+      allow write: if resource == null || 
+        (request.resource.data.lastImportTimestamp >= resource.data.lastImportTimestamp);
     }
     match /{document=**} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if true;
     }
   }
 }

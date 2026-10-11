@@ -96,29 +96,27 @@ export const EMPTY_SYSTEM_DATA: SystemData = {
   records: [],
   configs: {},
   viewPasswordEnabled: true,
+  lastImportTime: '',
+  lastImportTimestamp: 0,
 };
 
-export function getLocalSystemData(): SystemData {
+// Immediate cleanup of any stale localStorage data from previous architecture
+if (typeof window !== 'undefined') {
   try {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed && Array.isArray(parsed.batches) && Array.isArray(parsed.records)) {
-        return parsed as SystemData;
-      }
-    }
-  } catch (err) {
-    console.error('Failed to read from localStorage:', err);
+    localStorage.removeItem(LOCAL_STORAGE_KEY);
+  } catch (e) {
+    // ignore
   }
-  return EMPTY_SYSTEM_DATA;
+}
+
+let inMemoryData: SystemData = { ...EMPTY_SYSTEM_DATA };
+
+export function getLocalSystemData(): SystemData {
+  return inMemoryData;
 }
 
 export function saveLocalSystemData(data: SystemData) {
-  try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
-  } catch (err) {
-    console.error('Failed to save to localStorage:', err);
-  }
+  inMemoryData = data;
 }
 
 // Client-side Excel Template Generator

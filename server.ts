@@ -130,46 +130,51 @@ function broadcastDataChange(data: SystemData) {
   }
 }
 
-// Authoritative data fetcher (disk cache primary for instant Safari/mobile response, Firestore sync)
-async function getSystemDataAsync(): Promise<SystemData> {
-  const diskData = getLocalDiskData();
+// Master in-memory state initialized from disk
+let cachedMasterData: SystemData = getLocalDiskData();
 
-  // If local disk already has populated data, return immediately for instant response (<5ms)
-  if (diskData && (diskData.records?.length > 0 || diskData.batches?.length > 0)) {
-    return diskData;
-  }
+// On startup, perform one-time background reconciliation between disk and cloud Firestore
+async function initServerPersistence() {
+  if (!serverDb) return;
+  try {
+    const docRef = doc(serverDb, 'system', 'app_state');
+    const snap = await Promise.race([
+      getDoc(docRef),
+      new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+    ]);
 
-  // If disk is empty, attempt to hydrate from Firestore cloud backup
-  if (serverDb) {
-    try {
-      const docRef = doc(serverDb, 'system', 'app_state');
-      const snap = await Promise.race([
-        getDoc(docRef),
-        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
-      ]);
+    if (snap && snap.exists && snap.exists()) {
+      const cloudData = snap.data() as SystemData;
+      if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
+        const cloudTs = cloudData.lastImportTimestamp || (cloudData.lastImportTime ? Math.floor(new Date(cloudData.lastImportTime).getTime() / 1000) : 0);
+        const diskTs = cachedMasterData.lastImportTimestamp || (cachedMasterData.lastImportTime ? Math.floor(new Date(cachedMasterData.lastImportTime).getTime() / 1000) : 0);
+        const cloudUpdated = new Date(cloudData.updatedAt || 0).getTime();
+        const diskUpdated = new Date(cachedMasterData.updatedAt || 0).getTime();
 
-      if (snap && snap.exists && snap.exists()) {
-        const cloudData = snap.data() as SystemData;
-        if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
-          if (cloudData.records.length > 0 || cloudData.batches.length > 0) {
-            if (!cloudData.lastImportTime && cloudData.batches.length > 0) {
-              const latest = [...cloudData.batches].sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())[0];
-              cloudData.lastImportTime = formatTimestampToSeconds(latest.uploadedAt);
-              cloudData.lastImportTimestamp = Math.floor(new Date(latest.uploadedAt).getTime() / 1000);
-            }
-            saveLocalDiskData(cloudData);
-            return cloudData;
-          }
+        if (cloudTs > diskTs || (cloudTs === diskTs && cloudUpdated > diskUpdated)) {
+          console.log(`[Persistence] Loaded newer state from Firestore (batches: ${cloudData.batches.length}, records: ${cloudData.records.length})`);
+          cachedMasterData = cloudData;
+          saveLocalDiskData(cloudData);
+        } else if (cachedMasterData.batches.length > 0) {
+          console.log(`[Persistence] Disk state is newer, mirroring to Firestore`);
+          saveSystemDataAsync(cachedMasterData).catch(() => {});
         }
       }
-    } catch (err) {
-      // Fallback cleanly to disk data
+    } else if (cachedMasterData.batches.length > 0) {
+      saveSystemDataAsync(cachedMasterData).catch(() => {});
     }
+  } catch (err) {
+    console.warn('[Persistence] Firestore boot sync notice:', err);
   }
-  return diskData;
+}
+initServerPersistence();
+
+// Authoritative data fetcher: Returns in-memory state instantly with 0ms latency
+async function getSystemDataAsync(): Promise<SystemData> {
+  return cachedMasterData;
 }
 
-// Authoritative data saver (writes to disk, broadcasts to all connected browsers, mirrors to Firestore)
+// Authoritative data saver: Updates in-memory state, disk file, broadcasts SSE, and mirrors to Firestore
 async function saveSystemDataAsync(data: SystemData) {
   // Ensure lastImportTime and lastImportTimestamp are populated accurately to seconds
   if (!data.lastImportTime && data.batches && data.batches.length > 0) {
@@ -179,6 +184,7 @@ async function saveSystemDataAsync(data: SystemData) {
     data.lastImportTimestamp = Math.floor(new Date(latestBatch.uploadedAt).getTime() / 1000);
   }
 
+  cachedMasterData = data;
   saveLocalDiskData(data);
   broadcastDataChange(data);
 
@@ -196,10 +202,7 @@ async function saveSystemDataAsync(data: SystemData) {
         lastImportTime: data.lastImportTime || '',
         lastImportTimestamp: data.lastImportTimestamp || 0,
       };
-      // Fire and forget or background await to prevent hanging HTTP responses
-      setDoc(docRef, sanitizedData).catch((err) => {
-        console.error('Server Firestore async setDoc failed:', err);
-      });
+      await setDoc(docRef, sanitizedData);
     } catch (err) {
       console.error('Server Firestore write failed:', err);
     }
@@ -271,50 +274,21 @@ app.get('/api/status', async (req, res) => {
   }
 });
 
-// Sync full system state from authoritative client/cloud
+// Sync endpoint: Strictly protected against stale clients attempting full-state overwrites
 app.post('/api/sync', async (req, res) => {
   try {
-    if (!checkNotViewRole(req, res)) return;
-
-    const { data: incomingData, force, clientLastImportTimestamp } = req.body;
-    if (!incomingData || !Array.isArray(incomingData.batches) || !Array.isArray(incomingData.records)) {
-      return res.status(400).json({ error: '无效的数据格式' });
-    }
-
+    // Strictly read-only: return current authoritative data without permitting any overwrite
     const currentServerData = await getSystemDataAsync();
-    const serverTs = currentServerData.lastImportTimestamp || (currentServerData.lastImportTime ? Math.floor(new Date(currentServerData.lastImportTime).getTime() / 1000) : 0);
-    const clientTs = clientLastImportTimestamp || incomingData.lastImportTimestamp || (incomingData.lastImportTime ? Math.floor(new Date(incomingData.lastImportTime).getTime() / 1000) : 0);
-
-    // If server has newer data and this is not a force overwrite from administrator:
-    if (!force && serverTs > clientTs && (currentServerData.batches?.length > 0 || currentServerData.records?.length > 0)) {
-      return res.status(409).json({
-        conflict: true,
-        message: '服务器端数据更新，请选择需要保留的数据',
-        serverLastImportTime: currentServerData.lastImportTime,
-        serverLastImportTimestamp: serverTs,
-        serverBatchesCount: currentServerData.batches?.length || 0,
-        serverRecordsCount: currentServerData.records?.length || 0,
-        serverData: currentServerData,
-      });
-    }
-
-    const now = getNowPrecise();
-    const finalData: SystemData = {
-      ...incomingData,
-      lastImportTime: incomingData.lastImportTime || now.formatted,
-      lastImportTimestamp: incomingData.lastImportTimestamp || now.timestamp,
-      updatedAt: now.iso,
-    };
-
-    await saveSystemDataAsync(finalData);
     return res.json({
       success: true,
-      data: finalData,
-      lastImportTime: finalData.lastImportTime,
-      lastImportTimestamp: finalData.lastImportTimestamp,
+      deprecated: true,
+      message: '客户端整库同步已安全禁用，服务端为唯一权威数据源',
+      data: currentServerData,
+      lastImportTime: currentServerData.lastImportTime,
+      lastImportTimestamp: currentServerData.lastImportTimestamp,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || '同步数据失败' });
+    res.status(500).json({ error: '同步服务异常' });
   }
 });
 

@@ -1,4 +1,4 @@
-import { doc, getDoc, setDoc, onSnapshot, Unsubscribe } from 'firebase/firestore';
+import { doc, getDocFromServer } from 'firebase/firestore';
 import { db } from '../firebase';
 import { SystemData } from '../types';
 import { getLocalSystemData, saveLocalSystemData } from './storage';
@@ -8,10 +8,10 @@ const APP_STATE_DOC = 'app_state';
 
 /**
  * Fetch authoritative SystemData from backend /api/data with aggressive anti-cache parameters
- * (critical for Safari/WebKit cross-browser synchronization), with Firestore fallback.
+ * (critical for Safari/WebKit cross-browser synchronization), with direct server Firestore fallback.
  */
 export async function fetchAuthoritativeData(): Promise<SystemData | null> {
-  // 1. Try server endpoint first (fastest and most reliable on Safari/iOS)
+  // 1. Primary: Server endpoint (fastest, guaranteed fresh, no client IndexedDB cache issues)
   try {
     const res = await fetch(`/api/data?_t=${Date.now()}`, {
       cache: 'no-store',
@@ -23,29 +23,31 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
     if (res.ok) {
       const serverData = (await res.json()) as SystemData;
       if (serverData && Array.isArray(serverData.batches) && Array.isArray(serverData.records)) {
-        // Return server data directly without prematurely mutating localStorage
+        saveLocalSystemData(serverData);
         return serverData;
       }
     }
   } catch (err) {
-    console.warn('Fetch from /api/data failed, trying direct Firestore:', err);
+    console.warn('Fetch from /api/data failed, trying direct Firestore server read:', err);
   }
 
-  // 2. Fall back to direct client Firestore read
+  // 2. Direct Firestore fallback: MUST use getDocFromServer to completely bypass browser IndexedDB cache
   try {
     const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
-    const snap = await getDoc(docRef);
+    const snap = await getDocFromServer(docRef);
     if (snap.exists()) {
       const cloudData = snap.data() as SystemData;
       if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
+        saveLocalSystemData(cloudData);
         return cloudData;
       }
     }
   } catch (err) {
-    console.warn('Direct Firestore read failed:', err);
+    console.warn('Direct Firestore server read failed:', err);
   }
 
-  return null;
+  // Fallback to local memory data if completely offline
+  return getLocalSystemData();
 }
 
 /**
@@ -54,11 +56,13 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
 export async function fetchServerStatus(): Promise<{
   lastImportTime: string;
   lastImportTimestamp: number;
+  updatedAt: string;
   batchesCount: number;
   recordsCount: number;
 } | null> {
   try {
-    const res = await fetch('/api/status', {
+    const res = await fetch(`/api/status?_t=${Date.now()}`, {
+      cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
     });
     if (res.ok) {
@@ -80,112 +84,59 @@ export interface SaveSystemResult {
 }
 
 /**
- * Save complete SystemData to server mirror and Firestore cloud database.
- * Strictly forbidden in visitor browse mode.
+ * DEPRECATED: Client整库写回已彻底废弃。
+ * 所有数据变更均已重构为原子性服务端API（/api/import, /api/batches, /api/records等）。
+ * 保留此方法仅作为兼容性签名，防止老代码报错，绝不将客户端本地旧状态写回覆盖服务端！
  */
 export async function saveSystemDataToCloud(
-  data: SystemData,
-  options: { force?: boolean } = {}
+  _data: SystemData,
+  _options: { force?: boolean } = {}
 ): Promise<SaveSystemResult> {
-  // 浏览模式下，禁止向服务器端同步数据
-  const currentRole = sessionStorage.getItem('auth_role');
-  if (currentRole === 'view') {
-    console.warn('浏览模式下禁止向服务器端同步数据');
-    return { success: false, forbidden: true };
-  }
-
-  const sanitizedData: SystemData = {
-    batches: data.batches || [],
-    records: data.records || [],
-    configs: data.configs || {},
-    passwordHash: data.passwordHash || '',
-    viewPasswordHash: data.viewPasswordHash || '',
-    viewPasswordEnabled: data.viewPasswordEnabled !== undefined ? data.viewPasswordEnabled : true,
-    updatedAt: data.updatedAt || new Date().toISOString(),
-    lastImportTime: data.lastImportTime || '',
-    lastImportTimestamp: data.lastImportTimestamp || 0,
-  };
-
-  // 1. First sync to server backend (authoritative on-disk store & seconds tracker)
-  try {
-    const syncRes = await fetch('/api/sync', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-auth-role': currentRole || 'manager',
-      },
-      body: JSON.stringify({
-        data: sanitizedData,
-        force: options.force === true,
-        clientLastImportTimestamp: sanitizedData.lastImportTimestamp,
-      }),
-    });
-
-    if (syncRes.status === 409) {
-      // Conflict: Server has newer data! Prompt administrator
-      const conflictPayload = await syncRes.json();
-      return {
-        success: false,
-        conflict: true,
-        serverData: conflictPayload.serverData,
-        serverLastImportTime: conflictPayload.serverLastImportTime,
-        serverLastImportTimestamp: conflictPayload.serverLastImportTimestamp,
-      };
-    }
-
-    if (syncRes.status === 403) {
-      return { success: false, forbidden: true };
-    }
-
-    if (syncRes.ok) {
-      const syncJson = await syncRes.json();
-      if (syncJson.data) {
-        sanitizedData.lastImportTime = syncJson.data.lastImportTime;
-        sanitizedData.lastImportTimestamp = syncJson.data.lastImportTimestamp;
-      }
-    }
-  } catch (serverErr) {
-    console.warn('Server sync error:', serverErr);
-  }
-
-  // 2. Persist locally
-  saveLocalSystemData(sanitizedData);
-
-  // 3. Mirror to Firestore asynchronously
-  try {
-    const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
-    setDoc(docRef, sanitizedData).catch((e) => {
-      console.warn('Direct Firestore async mirror failed:', e);
-    });
-  } catch (fsErr) {
-    // Non-blocking
-  }
-
+  console.warn('saveSystemDataToCloud is deprecated: client full-state overwriting has been disabled for safety.');
   return { success: true };
 }
 
 /**
- * Fetch SystemData once from Firestore cloud database
+ * Fetch SystemData once
  */
 export async function fetchSystemDataFromCloud(): Promise<SystemData | null> {
   return fetchAuthoritativeData();
 }
 
+export type Unsubscribe = () => void;
+
 /**
- * Real-time listener for server and cloud data updates.
- * Leverages Server-Sent Events (SSE) for instant cross-tab / cross-browser sync,
- * with Firestore onSnapshot fallback.
+ * Real-time listener for server authoritative data updates.
+ * Leverages Server-Sent Events (SSE) with robust polling fallback.
+ * Strictly avoids client-side Firestore IndexedDB onSnapshot to prevent WebKit stale cache bugs.
  */
 export function subscribeToCloudSystemData(
   onUpdate: (data: SystemData) => void,
-  onNotFound?: () => void,
-  onError?: (error: Error) => void
+  _onNotFound?: () => void,
+  _onError?: (error: Error) => void
 ): Unsubscribe {
   let isUnsubscribed = false;
   let sseSource: EventSource | null = null;
   let pollTimer: any = null;
+  let lastKnownUpdatedAt = '';
 
-  // Real-time server sync via SSE
+  const checkAndUpdate = async () => {
+    if (isUnsubscribed) return;
+    try {
+      const status = await fetchServerStatus();
+      if (status && status.updatedAt && status.updatedAt !== lastKnownUpdatedAt) {
+        lastKnownUpdatedAt = status.updatedAt;
+        const fresh = await fetchAuthoritativeData();
+        if (fresh && !isUnsubscribed) {
+          onUpdate(fresh);
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  // 1. Real-time server sync via SSE
   if (typeof window !== 'undefined' && typeof EventSource !== 'undefined') {
     try {
       sseSource = new EventSource('/api/events');
@@ -193,24 +144,14 @@ export function subscribeToCloudSystemData(
         if (isUnsubscribed) return;
         const fresh = await fetchAuthoritativeData();
         if (fresh && !isUnsubscribed) {
+          if (fresh.updatedAt) lastKnownUpdatedAt = fresh.updatedAt;
           onUpdate(fresh);
         }
       });
       sseSource.onerror = () => {
-        // If SSE disconnects, fall back to low-frequency background poll
+        // SSE temporary disconnect, activate fallback polling
         if (!pollTimer && !isUnsubscribed) {
-          pollTimer = setInterval(async () => {
-            if (isUnsubscribed) return;
-            const status = await fetchServerStatus();
-            if (status) {
-              const currentLocal = getLocalSystemData();
-              const localTs = currentLocal.lastImportTimestamp || 0;
-              if (status.lastImportTimestamp > localTs) {
-                const fresh = await fetchAuthoritativeData();
-                if (fresh && !isUnsubscribed) onUpdate(fresh);
-              }
-            }
-          }, 4000);
+          pollTimer = setInterval(checkAndUpdate, 4000);
         }
       };
       sseSource.onopen = () => {
@@ -220,34 +161,20 @@ export function subscribeToCloudSystemData(
         }
       };
     } catch (e) {
-      // Non-blocking
+      // fallback to polling
+      pollTimer = setInterval(checkAndUpdate, 5000);
     }
+  } else {
+    pollTimer = setInterval(checkAndUpdate, 5000);
   }
 
-  // Fallback / complementary Firestore snapshot listener
-  const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
-  const unsubFs = onSnapshot(
-    docRef,
-    (snapshot) => {
-      if (snapshot.exists()) {
-        const cloudData = snapshot.data() as SystemData;
-        if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
-          onUpdate(cloudData);
-        }
-      } else {
-        if (onNotFound) onNotFound();
-      }
-    },
-    (error) => {
-      console.warn('Firestore snapshot listener warning:', error);
-      if (onError) onError(error);
-    }
-  );
+  // Periodic heartbeat poll (every 10 seconds) to ensure eventual consistency
+  const heartbeatTimer = setInterval(checkAndUpdate, 10000);
 
   return () => {
     isUnsubscribed = true;
     if (sseSource) sseSource.close();
     if (pollTimer) clearInterval(pollTimer);
-    unsubFs();
+    clearInterval(heartbeatTimer);
   };
 }
