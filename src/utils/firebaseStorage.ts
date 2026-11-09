@@ -1,4 +1,4 @@
-import { doc, getDocFromServer, runTransaction, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, getDocFromServer, runTransaction, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { SystemData, SalesRecord, SalespersonRole, ImportBatch, SalespersonConfig } from '../types';
 import { getLocalSystemData, saveLocalSystemData, formatTimestampToSeconds, getCurrentTimestampSeconds } from './storage';
@@ -39,20 +39,25 @@ export function sanitizeForFirestore<T>(val: T): T {
 
 /**
  * Fetch authoritative SystemData:
- * 1. If backend exists, fetch from /api/data.
- * 2. If static hosting (GitHub Pages) or /api/data fails, read directly from Firestore via getDocFromServer.
+ * 1. If backend exists, fetch from /api/data with timeout.
+ * 2. If static hosting (GitHub Pages) or /api/data fails, read directly from Firestore.
+ *    Supports getDocFromServer with fallback to getDoc for iOS Safari / WebKit offline states.
  */
 export async function fetchAuthoritativeData(): Promise<SystemData | null> {
   // 1. Try server endpoint if server might exist
   if (isServerAvailable()) {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
       const res = await fetch(`/api/data?_t=${Date.now()}`, {
+        signal: controller.signal,
         cache: 'no-store',
         headers: {
           'Cache-Control': 'no-cache, no-store, must-revalidate',
           'Pragma': 'no-cache',
         },
       });
+      clearTimeout(timeoutId);
       if (res.ok) {
         const serverData = (await res.json()) as SystemData;
         if (serverData && Array.isArray(serverData.batches) && Array.isArray(serverData.records)) {
@@ -61,15 +66,27 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
         }
       }
     } catch (err) {
-      // Server failed, seamlessly proceed to direct Firestore
+      // Server failed or timed out, seamlessly proceed to direct Firestore
     }
   }
 
-  // 2. Direct Firestore reading: bypasses browser IndexedDB cache
+  // 2. Direct Firestore reading: attempts server fetch first, falls back gracefully to getDoc for Safari iOS
   try {
     const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
-    const snap = await getDocFromServer(docRef);
-    if (snap.exists()) {
+    let snap;
+    try {
+      // Attempt getDocFromServer with a 2.5s race timeout
+      const serverPromise = getDocFromServer(docRef);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Server read timeout')), 2500)
+      );
+      snap = await Promise.race([serverPromise, timeoutPromise]);
+    } catch (serverErr) {
+      // On iOS Safari / WebKit or slow handshakes, getDoc seamlessly queries via Firestore engine
+      snap = await getDoc(docRef);
+    }
+
+    if (snap && snap.exists()) {
       const cloudData = snap.data() as SystemData;
       if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
         saveLocalSystemData(cloudData);
@@ -77,7 +94,7 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
       }
     }
   } catch (err) {
-    console.warn('Direct Firestore server read fallback:', err);
+    console.warn('Direct Firestore read fallback notice:', err);
   }
 
   // Fallback to local memory data if completely offline

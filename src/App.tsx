@@ -52,7 +52,7 @@ import {
   SecuritySettingsModal,
 } from './components/AuthModals';
 import { ViewAccessGatekeeper } from './components/ViewAccessGatekeeper';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, RefreshCw, FileSpreadsheet } from 'lucide-react';
 
 export default function App() {
   const [data, setData] = useState<SystemData>(() => EMPTY_SYSTEM_DATA);
@@ -97,26 +97,38 @@ export default function App() {
     try {
       setCloudSyncState('syncing');
       const serverData = await apiFetchData();
-      setData(serverData);
-      setLoading(false);
-      setCloudSyncState('synced');
+      if (serverData && Array.isArray(serverData.records)) {
+        setData(serverData);
+        setCloudSyncState('synced');
+        setLoading(false);
 
-      setSelectedMonths((prev) => {
-        if (prev.length === 0) {
-          const monthsSet = new Set<string>();
-          serverData.records.forEach((r) => r.month && monthsSet.add(r.month));
-          serverData.batches.forEach((b) => b.month && monthsSet.add(b.month));
-          const monthArray = Array.from(monthsSet).sort().reverse();
-          return monthArray.length > 0 ? [monthArray[0]] : [];
-        }
-        return prev;
-      });
+        setSelectedMonths((prev) => {
+          if (prev.length === 0) {
+            const monthsSet = new Set<string>();
+            serverData.records.forEach((r) => r.month && monthsSet.add(r.month));
+            serverData.batches.forEach((b) => b.month && monthsSet.add(b.month));
+            const monthArray = Array.from(monthsSet).sort().reverse();
+            return monthArray.length > 0 ? [monthArray[0]] : [];
+          }
+          return prev;
+        });
+      }
     } catch (err) {
       console.warn('Failed to fetch authoritative server data:', err);
       setCloudSyncState('offline');
       setLoading(false);
     }
   };
+
+  // Trigger authoritative cloud refresh immediately when unlocked / authenticated
+  useEffect(() => {
+    if (isViewAuthenticated || isManagerAuthenticated) {
+      if (data.records.length === 0) {
+        setLoading(true);
+      }
+      refreshServerData();
+    }
+  }, [isViewAuthenticated, isManagerAuthenticated]);
 
   // Real-time Cloud Synchronization & Event listeners for tab switching
   useEffect(() => {
@@ -140,9 +152,11 @@ export default function App() {
     // 3. Real-time broadcast listener (Server-Sent Events + Firestore)
     const unsubscribe = subscribeToCloudSystemData(
       (freshData) => {
-        setData(freshData);
-        setCloudSyncState('synced');
-        setLoading(false);
+        if (freshData && Array.isArray(freshData.records)) {
+          setData(freshData);
+          setCloudSyncState('synced');
+          setLoading(false);
+        }
       },
       undefined,
       (err) => {
@@ -396,17 +410,19 @@ export default function App() {
           sessionStorage.setItem('auth_role', 'view');
           setIsViewAuthenticated(true);
           setIsManagerAuthenticated(false);
+          refreshServerData();
         }}
         onManagerSuccess={() => {
           sessionStorage.setItem('auth_role', 'manager');
           setIsViewAuthenticated(true);
           setIsManagerAuthenticated(true);
+          refreshServerData();
         }}
         onDataLoaded={(freshData) => {
-          setData(freshData);
-          setLoading(false);
-          setCloudSyncState('synced');
-          if (freshData.records.length > 0) {
+          if (freshData && Array.isArray(freshData.records) && freshData.records.length > 0) {
+            setData(freshData);
+            setLoading(false);
+            setCloudSyncState('synced');
             const monthsSet = new Set<string>();
             freshData.records.forEach((r) => r.month && monthsSet.add(r.month));
             freshData.batches.forEach((b) => b.month && monthsSet.add(b.month));
@@ -460,9 +476,40 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 flex-1 w-full">
-        {loading ? (
-          <div className="py-20 text-center text-slate-400 text-sm">
-            正在加载云端销售与提成数据...
+        {loading && data.records.length === 0 ? (
+          <div className="py-24 flex flex-col items-center justify-center text-center">
+            <div className="w-9 h-9 border-3 border-[#8C8C70]/30 border-t-[#8C8C70] rounded-full animate-spin mb-4" />
+            <div className="text-sm font-semibold text-[#5A5A40]">正在同步云端销售与提成数据...</div>
+            <div className="text-xs text-[#8A8A70] mt-1.5">首次访问或移动端长连接连接中，请稍候</div>
+          </div>
+        ) : !loading && data.records.length === 0 ? (
+          <div className="py-16 bg-white border border-[#E8E6DF] rounded-2xl p-8 text-center max-w-lg mx-auto shadow-sm my-6">
+            <div className="w-12 h-12 rounded-xl bg-[#FAF9F5] border border-[#E8E6DF] flex items-center justify-center mx-auto text-[#8C8C70] mb-3.5">
+              <FileSpreadsheet className="w-6 h-6" />
+            </div>
+            <h3 className="text-base font-bold text-[#4A4A38]">暂无销售数据</h3>
+            <p className="text-xs text-[#8A8A70] mt-1.5 mb-5 leading-relaxed">
+              云端尚未加载完成或无销售记录。您可以点击下方按钮重新同步云端，或导入新的销售Excel表格。
+            </p>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={refreshServerData}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-[#5A5A40] bg-[#FAF9F5] border border-[#E8E6DF] hover:bg-[#F0EFEA] rounded-xl transition-all cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>刷新云端数据</span>
+              </button>
+              {isManagerAuthenticated && (
+                <button
+                  type="button"
+                  onClick={() => setIsImportModalOpen(true)}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-[#8C8C70] hover:bg-[#7A7A60] rounded-xl transition-all cursor-pointer shadow-xs"
+                >
+                  导入销售表格
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           <>

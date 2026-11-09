@@ -20,7 +20,7 @@ import {
   DEFAULT_VIEW_PASSWORD_HASH,
   ADMIN_PERMISSION_CODE_HASH,
 } from '../utils/crypto';
-import { fetchAuthoritativeData } from '../utils/firebaseStorage';
+import { fetchAuthoritativeData, subscribeToCloudSystemData } from '../utils/firebaseStorage';
 import { SystemData } from '../types';
 
 interface ViewAccessGatekeeperProps {
@@ -58,17 +58,33 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
     if (initialManagerHash) setActiveManagerHash(initialManagerHash);
   }, [initialViewHash, initialManagerHash]);
 
-  // Fast pre-fetch authoritative cloud state on mount (vital for fresh devices like Safari iOS)
+  // Fast pre-fetch authoritative cloud state and subscribe immediately (vital for mobile Safari iOS)
   useEffect(() => {
     let isMounted = true;
+
+    // 1. Fetch immediately
     fetchAuthoritativeData().then((cloudData) => {
       if (!isMounted || !cloudData) return;
       if (cloudData.viewPasswordHash) setActiveViewHash(cloudData.viewPasswordHash);
       if (cloudData.passwordHash) setActiveManagerHash(cloudData.passwordHash);
-      if (onDataLoaded) onDataLoaded(cloudData);
+      if (onDataLoaded && cloudData.records && cloudData.records.length > 0) {
+        onDataLoaded(cloudData);
+      }
     });
+
+    // 2. Realtime listener: catches the moment Firestore finishes handshake on Safari iOS
+    const unsubscribe = subscribeToCloudSystemData((cloudData) => {
+      if (!isMounted || !cloudData) return;
+      if (cloudData.viewPasswordHash) setActiveViewHash(cloudData.viewPasswordHash);
+      if (cloudData.passwordHash) setActiveManagerHash(cloudData.passwordHash);
+      if (onDataLoaded && cloudData.records && cloudData.records.length > 0) {
+        onDataLoaded(cloudData);
+      }
+    });
+
     return () => {
       isMounted = false;
+      unsubscribe();
     };
   }, [onDataLoaded]);
 
