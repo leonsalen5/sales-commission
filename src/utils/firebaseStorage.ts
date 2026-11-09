@@ -37,13 +37,60 @@ export function sanitizeForFirestore<T>(val: T): T {
   return clean as T;
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+/**
+ * Fetch static pre-bundled data.json asset from current deployment origin (e.g. GitHub Pages)
+ */
+async function fetchStaticSnapshot(): Promise<SystemData | null> {
+  if (typeof window === 'undefined') return null;
+  try {
+    const baseUrl = (import.meta as any).env?.BASE_URL || '/';
+    const cleanBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`${cleanBase}data.json?_t=${Date.now()}`, {
+      signal: controller.signal,
+      cache: 'no-cache',
+      headers: {
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+      },
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const parsed = (await res.json()) as SystemData;
+      if (parsed && Array.isArray(parsed.batches) && Array.isArray(parsed.records)) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    // static snapshot not reachable
+  }
+  return null;
+}
+
 /**
  * Fetch authoritative SystemData:
- * 1. If backend exists, fetch from /api/data with timeout.
- * 2. If static hosting (GitHub Pages) or /api/data fails, read directly from Firestore.
- *    Supports getDocFromServer with fallback to getDoc for iOS Safari / WebKit offline states.
+ * 1. If backend exists, fetch from /api/data with 2s timeout.
+ * 2. Read directly from Firestore with strict 3.5s timeout (supports mobile Safari & GitHub Pages).
+ * 3. Fallback to static snapshot (data.json) if on static hosting and Firestore is unreachable.
+ * 4. Fallback to local storage.
+ * Automatically selects the latest authoritative version across sources.
  */
 export async function fetchAuthoritativeData(): Promise<SystemData | null> {
+  let serverData: SystemData | null = null;
+  let firestoreData: SystemData | null = null;
+  let staticData: SystemData | null = null;
+
   // 1. Try server endpoint if server might exist
   if (isServerAvailable()) {
     try {
@@ -59,50 +106,63 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
       });
       clearTimeout(timeoutId);
       if (res.ok) {
-        const serverData = (await res.json()) as SystemData;
-        if (serverData && Array.isArray(serverData.batches) && Array.isArray(serverData.records)) {
-          saveLocalSystemData(serverData);
-          return serverData;
+        const json = (await res.json()) as SystemData;
+        if (json && Array.isArray(json.batches) && Array.isArray(json.records)) {
+          serverData = json;
         }
       }
     } catch (err) {
-      // Server failed or timed out, seamlessly proceed to direct Firestore
+      // Server not reachable
     }
   }
 
-  // 2. Direct Firestore reading: attempts getDoc first, falls back to getDocFromServer
+  // 2. Direct Firestore read with strict timeout (guaranteed NEVER to hang on iOS Safari)
   try {
     const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
-    let snap;
-    try {
-      // Attempt getDoc with a 4.5s race timeout (fastest on mobile and resilient across network switches)
-      const docPromise = getDoc(docRef);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Firestore read timeout')), 4500)
-      );
-      snap = await Promise.race([docPromise, timeoutPromise]);
-    } catch (err) {
-      try {
-        snap = await getDocFromServer(docRef);
-      } catch (serverErr) {
-        // Fall back to getDoc without race if server read fails
-        snap = await getDoc(docRef);
-      }
-    }
-
+    const snap = await withTimeout(getDoc(docRef), 3500);
     if (snap && snap.exists()) {
       const cloudData = snap.data() as SystemData;
       if (cloudData && Array.isArray(cloudData.batches) && Array.isArray(cloudData.records)) {
-        saveLocalSystemData(cloudData);
-        return cloudData;
+        firestoreData = cloudData;
       }
     }
   } catch (err) {
-    console.warn('Direct Firestore read fallback notice:', err);
+    // Firestore timed out or network blocked on mobile
   }
 
-  // Fallback to local memory data if completely offline
-  return getLocalSystemData();
+  // 3. If Firestore and server both yielded nothing or empty records, fetch static snapshot
+  if ((!firestoreData || firestoreData.records.length === 0) && (!serverData || serverData.records.length === 0)) {
+    staticData = await fetchStaticSnapshot();
+  }
+
+  // Evaluate candidate states to select the freshest authoritative state
+  const candidates: SystemData[] = [firestoreData, serverData, staticData].filter(
+    (c): c is SystemData => Boolean(c && Array.isArray(c.records) && c.records.length > 0)
+  );
+
+  if (candidates.length > 0) {
+    // Sort by latest lastImportTimestamp, then updatedAt, then record count
+    candidates.sort((a, b) => {
+      const tsA = a.lastImportTimestamp || 0;
+      const tsB = b.lastImportTimestamp || 0;
+      if (tsB !== tsA) return tsB - tsA;
+      const upA = new Date(a.updatedAt || 0).getTime();
+      const upB = new Date(b.updatedAt || 0).getTime();
+      if (upB !== upA) return upB - upA;
+      return (b.records?.length || 0) - (a.records?.length || 0);
+    });
+
+    const chosen = candidates[0];
+    saveLocalSystemData(chosen);
+    return chosen;
+  }
+
+  // If candidate with records not found, return firestoreData/serverData even if empty, or local
+  const bestFallback = firestoreData || serverData || staticData || getLocalSystemData();
+  if (bestFallback) {
+    saveLocalSystemData(bestFallback);
+  }
+  return bestFallback;
 }
 
 /**

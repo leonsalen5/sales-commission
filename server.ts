@@ -104,6 +104,10 @@ function saveLocalDiskData(data: SystemData) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    const publicDataFile = path.join(process.cwd(), 'public', 'data.json');
+    if (fs.existsSync(path.dirname(publicDataFile))) {
+      fs.writeFileSync(publicDataFile, JSON.stringify(data, null, 2), 'utf-8');
+    }
   } catch (err) {
     console.error('Error saving system data to disk:', err);
   }

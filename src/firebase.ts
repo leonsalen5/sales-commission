@@ -7,12 +7,6 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 
 // Initialize Cloud Firestore
 const isBrowser = typeof window !== 'undefined';
-const isSafariOrIOS =
-  isBrowser &&
-  typeof navigator !== 'undefined' &&
-  (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (/^((?!chrome|android).)*safari/i.test(navigator.userAgent)) ||
-    (typeof (navigator as any).maxTouchPoints === 'number' && (navigator as any).maxTouchPoints > 2));
 
 let firestoreInstance;
 try {
@@ -21,9 +15,10 @@ try {
         app,
         {
           ignoreUndefinedProperties: true,
-          ...(isSafariOrIOS
-            ? { experimentalForceLongPolling: true }
-            : { experimentalAutoDetectLongPolling: true }),
+          experimentalAutoDetectLongPolling: true,
+          experimentalLongPollingOptions: {
+            timeoutSeconds: 15,
+          },
         },
         firebaseConfig.firestoreDatabaseId || undefined
       )
@@ -38,16 +33,16 @@ try {
 
 export const db = firestoreInstance;
 
-// Test Firestore connection on boot
+// Test Firestore connection on boot with safety timeout
 export async function testConnection(): Promise<boolean> {
   try {
-    await getDocFromServer(doc(db, '_connection_test_', 'ping'));
+    const testPromise = getDocFromServer(doc(db, '_connection_test_', 'ping'));
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('timeout')), 3000)
+    );
+    await Promise.race([testPromise, timeoutPromise]);
     return true;
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('Firebase client is offline or network unavailable.');
-    }
-    // Any response from server (including doc not found) confirms connection
-    return true;
+    return false;
   }
 }
