@@ -70,20 +70,24 @@ export async function fetchAuthoritativeData(): Promise<SystemData | null> {
     }
   }
 
-  // 2. Direct Firestore reading: attempts server fetch first, falls back gracefully to getDoc for Safari iOS
+  // 2. Direct Firestore reading: attempts getDoc first, falls back to getDocFromServer
   try {
     const docRef = doc(db, SYSTEM_COLLECTION, APP_STATE_DOC);
     let snap;
     try {
-      // Attempt getDocFromServer with a 2.5s race timeout
-      const serverPromise = getDocFromServer(docRef);
+      // Attempt getDoc with a 4.5s race timeout (fastest on mobile and resilient across network switches)
+      const docPromise = getDoc(docRef);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Server read timeout')), 2500)
+        setTimeout(() => reject(new Error('Firestore read timeout')), 4500)
       );
-      snap = await Promise.race([serverPromise, timeoutPromise]);
-    } catch (serverErr) {
-      // On iOS Safari / WebKit or slow handshakes, getDoc seamlessly queries via Firestore engine
-      snap = await getDoc(docRef);
+      snap = await Promise.race([docPromise, timeoutPromise]);
+    } catch (err) {
+      try {
+        snap = await getDocFromServer(docRef);
+      } catch (serverErr) {
+        // Fall back to getDoc without race if server read fails
+        snap = await getDoc(docRef);
+      }
     }
 
     if (snap && snap.exists()) {

@@ -5,26 +5,31 @@ import firebaseConfig from '../firebase-applet-config.json';
 // Initialize Firebase App
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Detect Safari, iOS, or WebKit browsers where persistent HTTP streaming can stall
+// Initialize Cloud Firestore
+const isBrowser = typeof window !== 'undefined';
 const isSafariOrIOS =
+  isBrowser &&
   typeof navigator !== 'undefined' &&
   (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (/^((?!chrome|android).)*safari/i.test(navigator.userAgent)) ||
     (typeof (navigator as any).maxTouchPoints === 'number' && (navigator as any).maxTouchPoints > 2));
 
-// Initialize Cloud Firestore with robust settings (crucial for Safari iOS, WebKit, and mobile networks)
 let firestoreInstance;
 try {
-  firestoreInstance = initializeFirestore(
-    app,
-    {
-      ignoreUndefinedProperties: true,
-      ...(isSafariOrIOS
-        ? { experimentalForceLongPolling: true }
-        : { experimentalAutoDetectLongPolling: true }),
-    },
-    firebaseConfig.firestoreDatabaseId || undefined
-  );
+  firestoreInstance = isBrowser
+    ? initializeFirestore(
+        app,
+        {
+          ignoreUndefinedProperties: true,
+          ...(isSafariOrIOS
+            ? { experimentalForceLongPolling: true }
+            : { experimentalAutoDetectLongPolling: true }),
+        },
+        firebaseConfig.firestoreDatabaseId || undefined
+      )
+    : (firebaseConfig.firestoreDatabaseId
+        ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+        : getFirestore(app));
 } catch (e) {
   firestoreInstance = firebaseConfig.firestoreDatabaseId
     ? getFirestore(app, firebaseConfig.firestoreDatabaseId)

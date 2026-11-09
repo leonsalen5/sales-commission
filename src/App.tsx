@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { SystemData, SalespersonRole, SalesRecord } from './types';
 import {
   generateSalespersonSummaries,
@@ -400,38 +400,44 @@ export default function App() {
     return Array.from(set).sort();
   }, [data.records]);
 
+  const handleViewSuccess = useCallback(() => {
+    sessionStorage.setItem('auth_role', 'view');
+    setIsViewAuthenticated(true);
+    setIsManagerAuthenticated(false);
+    refreshServerData();
+  }, []);
+
+  const handleManagerSuccess = useCallback(() => {
+    sessionStorage.setItem('auth_role', 'manager');
+    setIsViewAuthenticated(true);
+    setIsManagerAuthenticated(true);
+    refreshServerData();
+  }, []);
+
+  const handleDataLoaded = useCallback((freshData: SystemData) => {
+    if (freshData && Array.isArray(freshData.records) && freshData.records.length > 0) {
+      setData(freshData);
+      setLoading(false);
+      setCloudSyncState('synced');
+      const monthsSet = new Set<string>();
+      freshData.records.forEach((r) => r.month && monthsSet.add(r.month));
+      freshData.batches.forEach((b) => b.month && monthsSet.add(b.month));
+      const monthArray = Array.from(monthsSet).sort().reverse();
+      if (monthArray.length > 0) {
+        setSelectedMonths((prev) => (prev.length === 0 ? [monthArray[0]] : prev));
+      }
+    }
+  }, []);
+
   // View Access Gatekeeper: If device is not yet authenticated for browsing or management
   if (!isViewAuthenticated && !isManagerAuthenticated) {
     return (
       <ViewAccessGatekeeper
         currentViewPasswordHash={data.viewPasswordHash}
         currentManagerPasswordHash={data.passwordHash}
-        onViewSuccess={() => {
-          sessionStorage.setItem('auth_role', 'view');
-          setIsViewAuthenticated(true);
-          setIsManagerAuthenticated(false);
-          refreshServerData();
-        }}
-        onManagerSuccess={() => {
-          sessionStorage.setItem('auth_role', 'manager');
-          setIsViewAuthenticated(true);
-          setIsManagerAuthenticated(true);
-          refreshServerData();
-        }}
-        onDataLoaded={(freshData) => {
-          if (freshData && Array.isArray(freshData.records) && freshData.records.length > 0) {
-            setData(freshData);
-            setLoading(false);
-            setCloudSyncState('synced');
-            const monthsSet = new Set<string>();
-            freshData.records.forEach((r) => r.month && monthsSet.add(r.month));
-            freshData.batches.forEach((b) => b.month && monthsSet.add(b.month));
-            const monthArray = Array.from(monthsSet).sort().reverse();
-            if (monthArray.length > 0) {
-              setSelectedMonths((prev) => (prev.length === 0 ? [monthArray[0]] : prev));
-            }
-          }
-        }}
+        onViewSuccess={handleViewSuccess}
+        onManagerSuccess={handleManagerSuccess}
+        onDataLoaded={handleDataLoaded}
       />
     );
   }

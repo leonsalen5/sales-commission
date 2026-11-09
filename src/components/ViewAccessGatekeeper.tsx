@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Lock,
   KeyRound,
@@ -23,6 +23,51 @@ import {
 import { fetchAuthoritativeData, subscribeToCloudSystemData } from '../utils/firebaseStorage';
 import { SystemData } from '../types';
 
+const AUTH_CACHE_KEY = 'TRAINING_AUTH_CACHE_V2';
+
+function getCachedHashes(): { viewHash?: string; managerHash?: string } {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(AUTH_CACHE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    // ignore
+  }
+  return {};
+}
+
+function saveCachedHashes(viewHash?: string, managerHash?: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    const existing = getCachedHashes();
+    localStorage.setItem(
+      AUTH_CACHE_KEY,
+      JSON.stringify({
+        viewHash: viewHash || existing.viewHash,
+        managerHash: managerHash || existing.managerHash,
+      })
+    );
+  } catch (e) {
+    // ignore
+  }
+}
+
+/**
+ * Normalizes input from mobile keyboards (especially iOS with Chinese/Pinyin IME):
+ * - Converts full-width numbers (０-９) to standard ASCII (0-9)
+ * - Converts full-width Latin letters (Ａ-Ｚ, ａ-ｚ) to standard ASCII (A-Z, a-z)
+ * - Removes invisible zero-width spaces (\u200B, \u200C, \u200D, \uFEFF)
+ * - Normalizes full-width ideographic spaces (\u3000) and non-breaking spaces (\u00A0)
+ */
+function normalizeInput(str: string): string {
+  return str
+    .replace(/[\uFF10-\uFF19]/g, (m) => String.fromCharCode(m.charCodeAt(0) - 0xfee0))
+    .replace(/[\uFF21-\uFF3A]/g, (m) => String.fromCharCode(m.charCodeAt(0) - 0xfee0))
+    .replace(/[\uFF41-\uFF5A]/g, (m) => String.fromCharCode(m.charCodeAt(0) - 0xfee0))
+    .replace(/[\u200B-\u200D\uFEFF\u3000\u00A0]/g, '')
+    .trim();
+}
+
 interface ViewAccessGatekeeperProps {
   currentViewPasswordHash?: string;
   currentManagerPasswordHash?: string;
@@ -45,53 +90,76 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
   const [isAdminMode, setIsAdminMode] = useState(false);
   const [adminPermissionCode, setAdminPermissionCode] = useState('');
 
+  // Read local cache immediately to eliminate zero-state delay on mobile Safari
+  const cached = getCachedHashes();
   const [activeViewHash, setActiveViewHash] = useState<string | undefined>(
-    initialViewHash || DEFAULT_VIEW_PASSWORD_HASH
+    initialViewHash || cached.viewHash || DEFAULT_VIEW_PASSWORD_HASH
   );
   const [activeManagerHash, setActiveManagerHash] = useState<string | undefined>(
-    initialManagerHash || DEFAULT_ADMIN_PASSWORD_HASH
+    initialManagerHash || cached.managerHash || DEFAULT_ADMIN_PASSWORD_HASH
   );
 
   // Sync props if updated by parent
   useEffect(() => {
-    if (initialViewHash) setActiveViewHash(initialViewHash);
-    if (initialManagerHash) setActiveManagerHash(initialManagerHash);
+    if (initialViewHash) {
+      setActiveViewHash(initialViewHash);
+      saveCachedHashes(initialViewHash, undefined);
+    }
+    if (initialManagerHash) {
+      setActiveManagerHash(initialManagerHash);
+      saveCachedHashes(undefined, initialManagerHash);
+    }
   }, [initialViewHash, initialManagerHash]);
 
-  // Fast pre-fetch authoritative cloud state and subscribe immediately (vital for mobile Safari iOS)
+  // Keep a stable ref to onDataLoaded so parent re-renders don't re-trigger subscription
+  const onDataLoadedRef = useRef(onDataLoaded);
+  onDataLoadedRef.current = onDataLoaded;
+
+  // Pre-fetch authoritative cloud state on mount and maintain continuous real-time sync
   useEffect(() => {
     let isMounted = true;
 
-    // 1. Fetch immediately
-    fetchAuthoritativeData().then((cloudData) => {
+    const handleCloudUpdate = (cloudData: SystemData) => {
       if (!isMounted || !cloudData) return;
-      if (cloudData.viewPasswordHash) setActiveViewHash(cloudData.viewPasswordHash);
-      if (cloudData.passwordHash) setActiveManagerHash(cloudData.passwordHash);
-      if (onDataLoaded && cloudData.records && cloudData.records.length > 0) {
-        onDataLoaded(cloudData);
+      if (cloudData.viewPasswordHash) {
+        setActiveViewHash(cloudData.viewPasswordHash);
       }
+      if (cloudData.passwordHash) {
+        setActiveManagerHash(cloudData.passwordHash);
+      }
+      saveCachedHashes(cloudData.viewPasswordHash, cloudData.passwordHash);
+
+      if (onDataLoadedRef.current && cloudData.records && cloudData.records.length > 0) {
+        onDataLoadedRef.current(cloudData);
+      }
+    };
+
+    // 1. Initial direct fetch
+    fetchAuthoritativeData().then((cloudData) => {
+      if (cloudData) handleCloudUpdate(cloudData);
     });
 
-    // 2. Realtime listener: catches the moment Firestore finishes handshake on Safari iOS
-    const unsubscribe = subscribeToCloudSystemData((cloudData) => {
-      if (!isMounted || !cloudData) return;
-      if (cloudData.viewPasswordHash) setActiveViewHash(cloudData.viewPasswordHash);
-      if (cloudData.passwordHash) setActiveManagerHash(cloudData.passwordHash);
-      if (onDataLoaded && cloudData.records && cloudData.records.length > 0) {
-        onDataLoaded(cloudData);
+    // 2. Real-time broadcast listener
+    const unsubscribe = subscribeToCloudSystemData(
+      (cloudData) => {
+        handleCloudUpdate(cloudData);
+      },
+      undefined,
+      (err) => {
+        console.warn('Realtime gatekeeper listener notice:', err);
       }
-    });
+    );
 
     return () => {
       isMounted = false;
       unsubscribe();
     };
-  }, [onDataLoaded]);
+  }, []);
 
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = password.trim();
-    if (!trimmed) {
+    const raw = password;
+    if (!raw.trim()) {
       setError('请输入浏览密码或管理员密码');
       return;
     }
@@ -100,50 +168,78 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
     setError('');
 
     try {
-      const inputHash = await hashString(trimmed);
-      let viewHash = activeViewHash || DEFAULT_VIEW_PASSWORD_HASH;
-      let mgrHash = activeManagerHash || DEFAULT_ADMIN_PASSWORD_HASH;
+      const trimmed = raw.trim();
+      const normalized = normalizeInput(raw);
+      const lowerNormalized = normalized.toLowerCase();
 
-      let matchedManager =
-        (mgrHash && inputHash === mgrHash) ||
-        inputHash === DEFAULT_ADMIN_PASSWORD_HASH ||
-        inputHash === ADMIN_PERMISSION_CODE_HASH;
-      let matchedView =
-        (viewHash && inputHash === viewHash) ||
-        inputHash === DEFAULT_VIEW_PASSWORD_HASH;
+      // Collect all plausible hash variations to tolerate mobile IME quirks
+      const candidateHashes = new Set<string>();
+      candidateHashes.add(await hashString(trimmed));
+      if (normalized !== trimmed) {
+        candidateHashes.add(await hashString(normalized));
+      }
+      if (lowerNormalized !== normalized) {
+        candidateHashes.add(await hashString(lowerNormalized));
+      }
 
-      // If neither matched in memory, refresh authoritative server data immediately
-      if (!matchedManager && !matchedView) {
+      const evaluateMatches = (vHash?: string, mHash?: string) => {
+        let matchedMgr = false;
+        let matchedVw = false;
+
+        for (const h of candidateHashes) {
+          if (
+            (mHash && h === mHash) ||
+            h === DEFAULT_ADMIN_PASSWORD_HASH ||
+            h === ADMIN_PERMISSION_CODE_HASH
+          ) {
+            matchedMgr = true;
+            break;
+          }
+          if (
+            (vHash && h === vHash) ||
+            h === DEFAULT_VIEW_PASSWORD_HASH
+          ) {
+            matchedVw = true;
+          }
+        }
+        return { matchedMgr, matchedVw };
+      };
+
+      let { matchedMgr, matchedVw } = evaluateMatches(activeViewHash, activeManagerHash);
+
+      // If neither matched in memory, refresh fresh authoritative server data
+      if (!matchedMgr && !matchedVw) {
         const freshData = await fetchAuthoritativeData();
         if (freshData) {
           if (freshData.viewPasswordHash) {
-            viewHash = freshData.viewPasswordHash;
             setActiveViewHash(freshData.viewPasswordHash);
           }
           if (freshData.passwordHash) {
-            mgrHash = freshData.passwordHash;
             setActiveManagerHash(freshData.passwordHash);
           }
-          if (onDataLoaded) onDataLoaded(freshData);
+          saveCachedHashes(freshData.viewPasswordHash, freshData.passwordHash);
 
-          matchedManager =
-            (mgrHash && inputHash === mgrHash) ||
-            inputHash === DEFAULT_ADMIN_PASSWORD_HASH ||
-            inputHash === ADMIN_PERMISSION_CODE_HASH;
-          matchedView =
-            (viewHash && inputHash === viewHash) ||
-            inputHash === DEFAULT_VIEW_PASSWORD_HASH;
+          if (onDataLoadedRef.current) {
+            onDataLoadedRef.current(freshData);
+          }
+
+          const retryMatches = evaluateMatches(
+            freshData.viewPasswordHash || activeViewHash,
+            freshData.passwordHash || activeManagerHash
+          );
+          matchedMgr = retryMatches.matchedMgr;
+          matchedVw = retryMatches.matchedVw;
         }
       }
 
       // 1. Grant FULL Manager Access
-      if (matchedManager) {
+      if (matchedMgr) {
         onManagerSuccess();
         return;
       }
 
       // 2. Grant Visitor Browsing Access (read-only)
-      if (matchedView) {
+      if (matchedVw) {
         onViewSuccess();
         return;
       }
@@ -158,7 +254,8 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
 
   const handleUnlockAdminByCode = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adminPermissionCode.trim()) {
+    const raw = adminPermissionCode;
+    if (!raw.trim()) {
       setError('请输入管理员密码或专属权限码');
       return;
     }
@@ -167,28 +264,47 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
     setError('');
 
     try {
-      const inputHash = await hashString(adminPermissionCode.trim());
+      const trimmed = raw.trim();
+      const normalized = normalizeInput(raw);
 
-      // Master permission code hash check
-      if (inputHash === ADMIN_PERMISSION_CODE_HASH) {
-        onManagerSuccess();
-        return;
+      const candidateHashes = new Set<string>();
+      candidateHashes.add(await hashString(trimmed));
+      if (normalized !== trimmed) {
+        candidateHashes.add(await hashString(normalized));
       }
 
-      let mgrHash = activeManagerHash || DEFAULT_ADMIN_PASSWORD_HASH;
-      let matched = (mgrHash && inputHash === mgrHash) || inputHash === DEFAULT_ADMIN_PASSWORD_HASH;
+      let matched = false;
+      for (const h of candidateHashes) {
+        if (
+          h === ADMIN_PERMISSION_CODE_HASH ||
+          (activeManagerHash && h === activeManagerHash) ||
+          h === DEFAULT_ADMIN_PASSWORD_HASH
+        ) {
+          matched = true;
+          break;
+        }
+      }
 
       if (!matched) {
         const freshData = await fetchAuthoritativeData();
         if (freshData?.passwordHash) {
-          mgrHash = freshData.passwordHash;
           setActiveManagerHash(freshData.passwordHash);
-          if (onDataLoaded) onDataLoaded(freshData);
-          matched = (mgrHash && inputHash === mgrHash) || inputHash === DEFAULT_ADMIN_PASSWORD_HASH;
+          saveCachedHashes(undefined, freshData.passwordHash);
+          if (onDataLoadedRef.current) onDataLoadedRef.current(freshData);
+
+          for (const h of candidateHashes) {
+            if (
+              h === ADMIN_PERMISSION_CODE_HASH ||
+              h === freshData.passwordHash ||
+              h === DEFAULT_ADMIN_PASSWORD_HASH
+            ) {
+              matched = true;
+              break;
+            }
+          }
         }
       }
 
-      // Matches Manager Password Hash
       if (matched) {
         onManagerSuccess();
         return;
@@ -276,6 +392,10 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
                       placeholder="请输入浏览密码或管理密码"
                       className="w-full px-4 py-2.5 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-xl focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all pr-10"
                       autoFocus
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      autoComplete="current-password"
                     />
                     <button
                       type="button"
@@ -356,6 +476,9 @@ export const ViewAccessGatekeeper: React.FC<ViewAccessGatekeeperProps> = ({
                     placeholder="请输入管理密码或专属权限码"
                     className="w-full px-4 py-2.5 text-xs bg-[#FAF9F5] border border-[#E8E6DF] rounded-xl focus:outline-none focus:border-[#8C8C70] focus:bg-white transition-all font-mono"
                     autoFocus
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                   />
                 </div>
 
